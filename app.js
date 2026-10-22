@@ -33,7 +33,7 @@ async function render() {
   const token = ++renderToken;
   const { parts, q } = parse();
   const r = parts[0] || "home";
-  const routes = { home, "find-jobs": findJobs, job, workers, premium, faq, contact, terms, privacy, login, register, "post-job": postJob, browse, welcome, admin };
+  const routes = { home, "find-jobs": findJobs, job, workers, premium, faq, contact, terms, privacy, login, register, "post-job": postJob, browse, welcome, admin, activate, verify: verifyPage };
   if (state.user && state.user.onboarded === false && r !== "welcome") { location.hash = "#/welcome"; return; }
   chrome(r);
   const app = document.getElementById("app");
@@ -43,6 +43,7 @@ async function render() {
   try { html = await (routes[r] || home)(parts, q); }
   catch (e) { html = `<div class="wrap page"><div class="empty"><h3>Could not load this page</h3><p>${esc(errMsg(e))}</p></div></div>`; }
   if (token !== renderToken) return;
+  if (state.user && state.user.fee_paid === false && r !== "activate") html = feeBanner() + html;
   app.innerHTML = html;
   window.scrollTo(0, 0);
   bind(r, parts, q);
@@ -55,7 +56,7 @@ function chrome(r) {
   document.getElementById("nav").innerHTML = links.map(([h, t]) => `<a class="${(r === "home" && !h) || r === h ? "on" : ""}" href="#/${h}">${t}</a>`).join("");
   const u = state.user;
   document.getElementById("auth").innerHTML = u
-    ? `<span class="meta">Hi, ${esc(u.name.split(" ")[0])}</span><button class="btn ghost sm" id="logout">Log out</button>`
+    ? `<span class="meta">Hi, ${esc(u.name.split(" ")[0])}</span>${u.role === "worker" && !u.verified ? '<a class="meta" href="#/verify">Get verified</a>' : ""}<button class="btn ghost sm" id="logout">Log out</button>`
     : `<a class="btn ghost sm" href="#/login">Log in</a><a class="btn sm" href="#/register">Sign up</a>`;
   const lo = document.getElementById("logout");
   if (lo) lo.onclick = async () => { await sb.auth.signOut(); state.user = null; toast("Logged out"); location.hash = "#/"; render(); };
@@ -108,7 +109,7 @@ async function home() {
     <p>WorkLink SA connects skilled workers with customers and businesses looking for reliable help.</p>
     <div class="cta"><a class="btn alt" href="#/find-jobs">Find Work</a><a class="btn ghost" href="#/post-job">Post a Job</a></div>
     <form class="searchbar" id="hsearch"><input name="q" placeholder="${esc(CFG.province)} Search — e.g. plumber, painter"><button class="btn">Search</button></form>
-    <div class="chips"><span>✔ Admin-approved verification</span><span>✔ 15 work categories</span><span>✔ Launching in ${esc(CFG.province)} – more provinces coming soon</span><span>✔ Free to browse, post and apply. Premium is optional.</span></div>
+    <div class="chips"><span>✔ Admin-approved verification</span><span>✔ 15 work categories</span><span>✔ Launching in ${esc(CFG.province)} – more provinces coming soon</span><span>✔ Free to browse. Once-off joining fee: R25 (individuals) / R50 (companies). Premium is optional.</span></div>
   </div></section>
 
   <section class="s"><div class="wrap"><div class="eyebrow">Popular categories</div><h2>Work that keeps South Africa moving</h2>
@@ -127,14 +128,14 @@ async function home() {
 
   <section class="s w"><div class="wrap"><div class="eyebrow">Why use WorkLink</div><h2>A marketplace made for how South Africans actually work</h2>
     <p class="lead">No fake profiles, no invented job numbers — you see exactly what is on the platform.</p>
-    <p><span class="badge">Workers quote their own price</span> <span class="badge">Free to join</span> <span class="badge">Covers trades, general labour, security and online work</span> <span class="badge">Admin-verified profiles</span></p>
+    <p><span class="badge">Workers quote their own price</span> <span class="badge">Joining fee R25 / R50 for companies</span> <span class="badge">Covers trades, general labour, security and online work</span> <span class="badge">Admin-verified profiles</span></p>
     <p class="lead">Workers set their own price and keep what they quote. WorkLink SA never takes a cut from your job payment.</p>
     <div class="grid">${[
       ["Built for South Africa", "Provinces, cities and suburbs from Midrand to Mthatha — with the Rand as the only currency."],
       ["Verification you can trust", "Verified Worker means a WorkLink SA administrator has checked the worker’s South African ID and matched it to a selfie."],
       ["Talk in one place", "Messaging stays linked to the job, so you always know who you are speaking to and why."],
       ["Real reviews", "Both sides rate each other after a completed job, and averages update automatically."],
-      ["You agree the price", "Workers quote their own price in Rands. No card is needed to browse, post or apply."],
+      ["You agree the price", "Workers quote their own price in Rands. No card is needed to browse, and your once-off joining fee activates posting and applying."],
       ["Report anything", "Report a user, a job or a message. Administrators review every report."],
     ].map(([t, d]) => `<div class="card"><h3>${t}</h3><p>${d}</p></div>`).join("")}</div></div></section>
 
@@ -156,7 +157,7 @@ async function home() {
       <a class="btn" href="#/register?role=worker">Find Work</a></div>
     <div><div class="eyebrow">For customers</div><h2>Reliable help, without the guesswork</h2>
       <p class="lead">Homeowners, landlords, body corporates and businesses — post the work once and let skilled people come to you.</p>
-      <ul class="tick"><li>Post a job free and describe exactly what you need</li><li>Compare applicants, prices and ratings side by side</li><li>See admin-approved verification before you hire</li><li>Track every job from open to completed</li></ul>
+      <ul class="tick"><li>Post a job and describe exactly what you need</li><li>Compare applicants, prices and ratings side by side</li><li>See admin-approved verification before you hire</li><li>Track every job from open to completed</li></ul>
       <a class="btn alt" href="#/post-job">Post a Job</a></div>
   </div></section>
 
@@ -164,7 +165,7 @@ async function home() {
     <p class="lead">Worker Premium puts your profile in front of customers first. Business Premium keeps multiple jobs visible. Feature a single job for R29. Subscriptions are recorded on the platform and only activate once WorkLink SA confirms payment — we never mark a payment as successful on your behalf.</p>
     <a class="btn" href="#/premium">See Premium plans</a> <a class="btn ghost" href="#/register">Create a free profile</a></div>
     <div class="card"><span class="badge gold">Featured Job</span><p>One job, top of the list</p><div class="price">R29</div>
-    <p>Worker Premium — R59/month, free for your first 3 months</p><p>Business Premium — R199/month</p><p><b>Free forever:</b> browse, post, apply and message</p></div></div></section>`;
+    <p>Worker Premium — R59/month, free for your first 3 months</p><p>Business Premium — R199/month</p><p><b>Joining fee:</b> R25 individuals · R50 companies (once-off)</p><p><b>Always free:</b> browsing jobs and workers</p></div></div></section>`;
 }
 
 const STEPS = {
@@ -200,6 +201,7 @@ async function job([, id]) {
     ? `<h3>Applicants (${apps.length})</h3>${apps.map(a => `<div class="card" style="margin:8px 0"><b>${esc(a.profiles?.name || "Worker")}</b> — ${rand(a.price)}<p>${esc(a.message)}</p>${j.status === "Open" ? `<button class="btn sm" data-pick="${esc(a.id)}">Select</button>` : a.picked ? '<span class="badge">Selected</span>' : ""}</div>`).join("") || '<p class="meta">No applicants yet.</p>'}${j.status === "Assigned" ? `<button class="btn" id="done">Mark completed</button>` : ""}`
     : !u ? `<p><a class="btn" href="#/login">Log in as a worker to apply</a></p>`
     : u.role !== "worker" ? `<p class="meta">Only workers can apply for jobs.</p>`
+    : u.fee_paid === false ? needActivate()
     : applied ? `<p><span class="badge">You have applied</span></p>`
     : j.status !== "Open" ? `<p class="meta">This job is no longer open.</p>`
     : `<h3>Apply for this job</h3><form class="f" id="apply"><label>Your price (R)<input name="price" type="number" min="1" required></label><label>Cover message<textarea name="message" required></textarea></label><button class="btn">Send application</button></form>`;
@@ -218,10 +220,10 @@ async function premium() {
   const u = state.user;
   let subs = [];
   if (u) { const { data } = await sb.from("subscriptions").select("*").eq("user_id", u.id).order("created_at", { ascending: false }); subs = data || []; }
-  const plan = (id, name, price, desc, items) => `<div class="card"><h3>${name}</h3><div class="price">${price}</div><p>${desc}</p><ul class="tick">${items.map(i => `<li>${i}</li>`).join("")}</ul><button class="btn" data-plan="${id}">${id === "free" ? "Current plan" : "Request " + name}</button></div>`;
+  const plan = (id, name, price, desc, items) => `<div class="card"><h3>${name}</h3><div class="price">${price}</div><p>${desc}</p><ul class="tick">${items.map(i => `<li>${i}</li>`).join("")}</ul><button class="btn" data-plan="${id}">${id === "joining" ? "Pay joining fee" : "Request " + name}</button></div>`;
   return `<div class="wrap page"><div class="eyebrow">Premium</div><h2>Stand out when it matters most</h2>
   <div class="note">Subscriptions are recorded as <b>pending</b> and only activate once WorkLink SA confirms payment. Nothing is ever marked paid automatically.</div>
-  <div class="grid">${plan("free", "Free", "R0", "Free forever", ["Browse jobs", "Post jobs", "Apply and message"])}
+  <div class="grid">${plan("joining", "Joining fee", "R25 / R50", "Once-off: R25 individuals, R50 companies", ["Post jobs", "Apply for jobs", "Browse for free"])}
   ${plan("worker", "Worker Premium", "R59/mo", "Free for your first 3 months", ["Profile shown to customers first", "Premium badge"])}
   ${plan("business", "Business Premium", "R199/mo", "For businesses posting often", ["Keep multiple jobs visible", "Priority support"])}
   ${plan("featured", "Featured Job", "R29", "One job, top of the list", ["Pinned above other jobs"])}</div>
@@ -229,7 +231,7 @@ async function premium() {
 }
 
 const FAQ = [
-  ["Is WorkLink SA free?", "Yes. Browsing, posting jobs, applying and messaging are free. Premium is optional."],
+  ["Is WorkLink SA free?", "Browsing jobs and workers is free. To post jobs or apply you pay a once-off joining fee: R25 for individuals and R50 for companies. Premium is optional."],
   ["Does WorkLink SA take a cut of my pay?", "No. Workers set their own price and keep what they quote."],
   ["What does Verified Worker mean?", "A WorkLink SA administrator has checked the worker’s South African ID and matched it to a selfie."],
   ["How do I pay a worker?", "Agree the price in the app and pay the worker directly after the job is done."],
@@ -242,7 +244,7 @@ const terms = () => `<div class="wrap page" style="max-width:820px"><h2>Terms of
 <h3>1. About WorkLink SA</h3><p>WorkLink SA is an online platform that lets customers and workers in South Africa find each other. By creating an account or using the platform you agree to these Terms. If you do not agree, please do not use it.</p>
 <h3>2. Who may use it</h3><p>You must be 18 or older. You must give true information and keep your login details safe. You are responsible for everything done through your account.</p>
 <h3>3. Our role</h3><p>WorkLink SA is only a meeting place. We do not employ workers, are not a party to any agreement between users, do not supervise or guarantee any work, and do not guarantee that any job will be offered, filled or completed, or that any person is honest, qualified, licensed or insured.</p>
-<h3>4. Jobs, prices and payment</h3><p>Customers describe the work they need. Workers quote their own price in Rands. Users agree the price and the work between themselves. WorkLink SA does not handle or hold payments for jobs and takes no commission. Any payment for a job is made directly between the customer and the worker, and any dispute over it is between them.</p>
+<h3>4. Jobs, prices and payment</h3><p>Customers describe the work they need. Workers quote their own price in Rands. Users agree the price and the work between themselves. WorkLink SA does not handle or hold payments for jobs and takes no commission. A once-off joining fee (R25 for individuals and R50 for companies) is charged to activate an account for posting jobs and applying. The joining fee is paid to WorkLink SA, is not a payment for any job, and is not refundable except where the law requires. Any payment for a job is made directly between the customer and the worker, and any dispute over it is between them.</p>
 <h3>5. Verification</h3><p>“Verified Worker” means a WorkLink SA administrator has checked a South African ID and matched it to a selfie at the time of checking. It does not mean we have checked the worker’s skills, certificates, criminal record, references, tools or insurance, and it is not a guarantee of quality, safety or honesty. Always do your own checks, such as asking for certificates for electrical and plumbing work.</p>
 <h3>6. Premium</h3><p>Premium plans and featured jobs are optional. A request is only recorded on the platform and becomes active once WorkLink SA confirms payment. Premium may improve how visible a profile or job is but does not guarantee work or results. Prices may change with notice.</p>
 <h3>7. What you must not do</h3><p>You must not post false, misleading, illegal, offensive or discriminatory content; pretend to be someone else; harass or threaten others; ask for payment outside an agreed job in a misleading way; post jobs or offer services that are illegal; collect other users’ information for other purposes; or try to break, overload or misuse the platform.</p>
@@ -255,7 +257,7 @@ const terms = () => `<div class="wrap page" style="max-width:820px"><h2>Terms of
 <h3>14. Contact</h3><p>Questions? Use the <a href="#/contact">Contact page</a> or the WhatsApp chat button. Our handling of personal information is explained in the <a href="#/privacy">Privacy Policy</a>.</p></div>`;
 const privacy = () => `<div class="wrap page" style="max-width:820px"><h2>Privacy Policy</h2><p class="meta">Last updated: 22 October 2026</p>
 <p>This policy explains how WorkLink SA collects and uses personal information, in line with the Protection of Personal Information Act (POPIA).</p>
-<h3>1. What we collect</h3><p><b>Account details:</b> your name, email address and, if you sign in with Google, the basic profile details Google shares with us. <b>Profile details:</b> your role (worker or customer), city, and for workers their skills and hourly rate. <b>Activity:</b> jobs you post, applications you send, reports, contact messages and Premium requests. <b>Verification:</b> if you ask to be verified, we may ask you to show a South African ID and a selfie so an administrator can check them.</p>
+<h3>1. What we collect</h3><p><b>Account details:</b> your name, email address and, if you sign in with Google, the basic profile details Google shares with us. <b>Profile details:</b> your role (worker or customer), whether you are an individual or a company (and the company name), city, and for workers their skills and hourly rate. <b>Activity:</b> jobs you post, applications you send, reports, contact messages and Premium requests. <b>Verification:</b> if you ask to be verified, you upload a photo of your South African ID and a selfie. They are stored privately and can only be viewed by WorkLink SA administrators to check that they match. We do not show them to other users.</p>
 <h3>2. Why we use it</h3><p>To create and run your account, show jobs and workers, let customers and workers connect, handle verification and Premium requests, respond to reports and messages, keep the platform safe, and meet legal duties. We do not sell your personal information.</p>
 <h3>3. What other people can see</h3><p>Worker profiles are visible to anyone using the platform and show your name, city, skills, rate, and whether you are verified or Premium. Jobs you post are visible to everyone. Applications are visible only to you and the customer who posted the job. Your email address and ID documents are not shown to other users.</p>
 <h3>4. Who handles your information</h3><p>We use Supabase to store data and run sign-in, and Google if you choose “Continue with Google”. These providers may store or process information on servers outside South Africa. We only use providers that apply reasonable security safeguards, and we share only what is needed to run the service. We may also disclose information when the law requires it.</p>
@@ -267,12 +269,56 @@ const privacy = () => `<div class="wrap page" style="max-width:820px"><h2>Privac
 <h3>10. Changes</h3><p>We may update this policy and will post the new version here with its date.</p>
 <h3>11. Contact</h3><p>For privacy questions or requests, use the <a href="#/contact">Contact page</a> or the WhatsApp chat button.</p></div>`;
 
+const FEES = { individual: 25, company: 50 };
+const feeOf = u => FEES[u?.account_type] || FEES.individual;
+const feeRef = u => "WL-" + String(u.id).slice(0, 8).toUpperCase();
+const acctFields = () => `<label>Account type<select name="account_type"><option value="individual">Individual — R25 once-off joining fee</option><option value="company">Company / business — R50 once-off joining fee</option></select></label><label data-company>Company name<input name="company_name"></label>`;
+const feeBanner = () => `<div class="wrap" style="padding-top:16px"><div class="note">Your account is not active yet. Pay the once-off joining fee of <b>${rand(feeOf(state.user))}</b> to post jobs or apply. <a href="#/activate">Activate now</a></div></div>`;
+const needActivate = () => `<p><a class="btn" href="#/activate">Pay joining fee (${rand(feeOf(state.user))}) to continue</a></p>`;
+const needLogin = () => `<div class="wrap page"><div class="empty"><h3>Please log in first</h3><a class="btn" href="#/login">Log in</a> <a class="btn ghost" href="#/register">Sign up</a></div></div>`;
+
+async function activate() {
+  const u = state.user;
+  if (!u) return needLogin();
+  if (u.fee_paid !== false) return `<div class="wrap page"><div class="empty"><h3>Your account is active ✔</h3><a class="btn" href="#/find-jobs">Find jobs</a> <a class="btn ghost" href="#/post-job">Post a job</a></div></div>`;
+  const { data } = await sb.from("subscriptions").select("*").eq("user_id", u.id).eq("plan", "joining").order("created_at", { ascending: false }).limit(1);
+  const last = data && data[0];
+  const wa = `https://wa.me/${CFG.whatsapp}?text=${encodeURIComponent("Hi WorkLink SA, I want to pay my joining fee. Reference " + feeRef(u))}`;
+  const how = CFG.paymentInstructions
+    ? `<div class="card"><p style="color:var(--ink);white-space:pre-line">${esc(CFG.paymentInstructions)}</p></div>`
+    : `<p>Message us on WhatsApp to get the payment details: <a href="${wa}" target="_blank" rel="noopener">Chat with us</a></p>`;
+  const status = last && last.status.startsWith("pending") ? `<div class="note">We received your payment notice on ${new Date(last.created_at).toLocaleDateString("en-ZA")}. Your account is activated once we confirm the payment.</div>`
+    : last && last.status === "rejected" ? `<div class="note">Your last payment could not be confirmed. Please check the payment and notify us again.</div>` : "";
+  return `<div class="wrap page" style="max-width:720px"><h2>Activate your account</h2>
+  <p class="lead">A once-off joining fee of <b>${rand(feeOf(u))}</b> (${u.account_type === "company" ? "company" : "individual"} account) activates posting jobs and applying. Browsing stays free.</p>
+  ${status}<h3>How to pay</h3><p>Use this payment reference: <b>${esc(feeRef(u))}</b></p>${how}
+  <p class="meta">WorkLink SA never marks a payment as received by itself. An administrator confirms it first.</p>
+  <button class="btn" id="paid">I have paid — notify WorkLink SA</button></div>`;
+}
+
+async function verifyPage() {
+  const u = state.user;
+  if (!u) return needLogin();
+  const { data: v } = await sb.from("verifications").select("*").eq("user_id", u.id).maybeSingle();
+  const st = u.verified ? "approved" : v?.status;
+  const msg = st === "approved" ? `<div class="note" style="background:#e6f4ec;border-color:#b9e0c8">You are verified ✔</div>`
+    : st === "submitted" ? `<div class="note">Your photos were submitted and are waiting for review.</div>`
+    : st === "rejected" ? `<div class="note">Your last submission could not be approved. Please send clearer photos.</div>` : "";
+  const form = st === "approved" || st === "submitted" ? "" : `<form class="f" id="vf">
+    <label>Photo of your South African ID (front)<input type="file" name="idfile" accept="image/*" required></label>
+    <label>Selfie holding your ID next to your face<input type="file" name="selfie" accept="image/*" capture="user" required></label>
+    <label style="display:flex;gap:10px;align-items:flex-start;font-weight:400"><input type="checkbox" name="consent" required style="width:auto;margin-top:4px"><span>I consent to WorkLink SA administrators viewing my ID photo and selfie to verify me, as explained in the <a href="#/privacy" target="_blank">Privacy Policy</a>.</span></label>
+    <button class="btn">Submit for verification</button></form>`;
+  return `<div class="wrap page" style="max-width:720px"><h2>Get verified</h2>
+  <p class="lead">A Verified badge shows customers an administrator checked your ID against your selfie. Photos are stored privately, only administrators can view them, and other users never see them. Use clear JPG, PNG or WebP photos under 5 MB each.</p>${msg}${form}</div>`;
+}
+
 const admBtn = (label, fn, args, cls = "") => `<button class="btn sm ${cls}" data-adm="${esc(JSON.stringify({ fn, args }))}">${label}</button>`;
 async function admin(_, q) {
   const u = state.user;
   if (!u || !u.is_admin) return `<div class="wrap page"><div class="empty"><h3>Admins only</h3><a href="#/">Back home</a></div></div>`;
   const tab = q.tab || "subs";
-  const tabs = [["subs", "Subscriptions"], ["workers", "Workers"], ["jobs", "Jobs"], ["reports", "Reports"], ["messages", "Messages"]];
+  const tabs = [["subs", "Subscriptions"], ["verify", "Verification"], ["workers", "Workers"], ["jobs", "Jobs"], ["reports", "Reports"], ["messages", "Messages"]];
   const date = d => new Date(d).toLocaleString("en-ZA");
   let body = "";
   if (tab === "subs") {
@@ -286,6 +332,13 @@ async function admin(_, q) {
   } else if (tab === "jobs") {
     const list = await fetchJobs();
     body = list.map(j => `<div class="card" style="margin:8px 0"><div class="job"><div><b><a href="#/job/${esc(j.id)}">${esc(j.title)}</a></b> ${j.featured ? '<span class="badge gold">Featured</span>' : ""}<div class="meta">${esc(j.category)} · ${esc(j.city)} · ${esc(j.status)}</div></div><div>${admBtn(j.featured ? "Unfeature" : "Feature", "admin_feature_job", { p_job: j.id, p_value: !j.featured }, "ghost")} ${admBtn("Delete", "admin_delete_job", { p_job: j.id }, "ghost")}</div></div></div>`).join("") || `<div class="empty"><p>No jobs yet.</p></div>`;
+  } else if (tab === "verify") {
+    const { data, error } = await sb.from("verifications").select("*, profiles(name, account_type, company_name)").eq("status", "submitted").order("submitted_at");
+    if (error) throw error;
+    const rows = data || [], urls = {};
+    const paths = rows.flatMap(v => [v.id_path, v.selfie_path]);
+    if (paths.length) { const { data: sg } = await sb.storage.from("verification").createSignedUrls(paths, 600); (sg || []).forEach(x => { if (x.signedUrl) urls[x.path] = x.signedUrl; }); }
+    body = rows.map(v => `<div class="card" style="margin:8px 0"><b>${esc(v.profiles?.name || "User")}</b> <span class="badge grey">${esc(v.profiles?.account_type || "")}${v.profiles?.company_name ? " · " + esc(v.profiles.company_name) : ""}</span><div class="meta">Submitted ${date(v.submitted_at)} · ID photo, then selfie</div><div style="display:flex;gap:12px;flex-wrap:wrap;margin:10px 0">${[v.id_path, v.selfie_path].map(pth => urls[pth] ? `<a href="${esc(urls[pth])}" target="_blank" rel="noopener"><img src="${esc(urls[pth])}" alt="" style="max-width:240px;border-radius:10px;border:1px solid var(--line)"></a>` : '<span class="meta">Image unavailable</span>').join("")}</div>${admBtn("Approve — ID matches selfie", "admin_review_verification", { p_user: v.user_id, p_approve: true })} ${admBtn("Reject", "admin_review_verification", { p_user: v.user_id, p_approve: false }, "ghost")}</div>`).join("") || `<div class="empty"><p>No verifications waiting.</p></div>`;
   } else if (tab === "reports") {
     const { data, error } = await sb.from("reports").select("*, jobs(id,title), profiles(name)").order("created_at", { ascending: false });
     if (error) throw error;
@@ -305,13 +358,13 @@ const welcome = () => {
   return `<div class="wrap page"><h2>Welcome, ${esc(u.name.split(" ")[0])}!</h2><p class="lead">One last step: tell us how you will use WorkLink SA.</p><form class="f" id="wl">
   <label>I want to<select name="role"><option value="worker">Find work (worker)</option><option value="customer">Hire people (customer)</option></select></label>
   <label>City<select name="city">${opts(CITIES)}</select></label>
-  <div id="wlfields"><label>Skills (hold Ctrl/Cmd to pick several)<select name="skills" multiple size="6">${opts(CATEGORIES)}</select></label><label>Hourly rate (R)<input name="rate" type="number" min="0"></label></div>
+  ${acctFields()}<div id="wlfields"><label>Skills (hold Ctrl/Cmd to pick several)<select name="skills" multiple size="6">${opts(CATEGORIES)}</select></label><label>Hourly rate (R)<input name="rate" type="number" min="0"></label></div>
   ${agreeBox()}<button class="btn">Finish</button></form></div>`;
 };
 const login = () => `<div class="wrap page"><h2>Log in</h2><form class="f" id="lf"><label>Email<input name="email" type="email" required></label><label>Password<input name="password" type="password" required></label><button class="btn">Log in</button></form>${googleBtn()}<p>New here? <a href="#/register">Sign up</a></p></div>`;
 const register = (_, q) => `<div class="wrap page"><h2>Create your account</h2><form class="f" id="rf">
   <label>I want to<select name="role"><option value="worker" ${q.role === "worker" ? "selected" : ""}>Find work (worker)</option><option value="customer" ${q.role === "customer" ? "selected" : ""}>Hire people (customer)</option></select></label>
-  <label>Full name<input name="name" required></label><label>Email<input name="email" type="email" required></label><label>Password (min 6)<input name="password" type="password" minlength="6" required></label>
+  ${acctFields()}<label>Full name<input name="name" required></label><label>Email<input name="email" type="email" required></label><label>Password (min 6)<input name="password" type="password" minlength="6" required></label>
   <label>City<select name="city">${opts(CITIES)}</select></label>
   <div id="wfields"><label>Skills (hold Ctrl/Cmd to pick several)<select name="skills" multiple size="6">${opts(CATEGORIES)}</select></label><label>Hourly rate (R)<input name="rate" type="number" min="0"></label></div>
   ${agreeBox()}<button class="btn">Sign up</button></form>${googleBtn()}</div>`;
@@ -319,7 +372,8 @@ const postJob = () => {
   const u = state.user;
   if (!u) return `<div class="wrap page"><div class="empty"><h3>Log in to post a job</h3><a class="btn" href="#/login">Log in</a> <a class="btn ghost" href="#/register?role=customer">Sign up</a></div></div>`;
   if (u.role !== "customer") return `<div class="wrap page"><div class="empty"><h3>Only customer accounts can post jobs</h3><p>Sign up with a customer account to hire people.</p></div></div>`;
-  return `<div class="wrap page"><h2>Post a job</h2><form class="f" id="pj"><label>Title<input name="title" required></label><label>Category<select name="category">${opts(CATEGORIES)}</select></label><label>City<select name="city">${opts(CITIES, u.city)}</select></label><label>Budget (R)<input name="budget" type="number" min="1" required></label><label>Description<textarea name="description" required></textarea></label><button class="btn">Post job (free)</button></form></div>`;
+  if (u.fee_paid === false) return `<div class="wrap page"><div class="empty"><h3>Activate your account to post jobs</h3><p>Pay the once-off joining fee of ${rand(feeOf(u))}.</p>${needActivate()}</div></div>`;
+  return `<div class="wrap page"><h2>Post a job</h2><form class="f" id="pj"><label>Title<input name="title" required></label><label>Category<select name="category">${opts(CATEGORIES)}</select></label><label>City<select name="city">${opts(CITIES, u.city)}</select></label><label>Budget (R)<input name="budget" type="number" min="1" required></label><label>Description<textarea name="description" required></textarea></label><button class="btn">Post job</button></form></div>`;
 };
 
 /* ---------- behaviour ---------- */
@@ -337,6 +391,30 @@ const must = ({ error }) => { if (error) throw error; };
 const qs = d => new URLSearchParams(Object.entries(d).filter(([, v]) => v)).toString();
 
 function bind(r, parts, q) {
+  document.querySelectorAll("select[name=account_type]").forEach(sel => {
+    const box = sel.form.querySelector("[data-company]");
+    const t = () => { if (box) box.style.display = sel.value === "company" ? "" : "none"; };
+    sel.onchange = t; t();
+  });
+  const paid = document.getElementById("paid");
+  if (paid) paid.onclick = async () => {
+    try { must(await sb.from("subscriptions").insert({ user_id: state.user.id, plan: "joining" })); toast("Thanks — we will activate your account once we confirm payment"); render(); }
+    catch (e) { toast(errMsg(e)); }
+  };
+  on("vf", async f => {
+    const u = state.user, idf = f.idfile.files[0], sf = f.selfie.files[0];
+    if (!idf || !sf) throw new Error("Please add both photos");
+    for (const x of [idf, sf]) {
+      if (x.size > 5 * 1024 * 1024) throw new Error("Each photo must be under 5 MB");
+      if (!/^image\/(jpeg|png|webp)$/.test(x.type)) throw new Error("Please use a JPG, PNG or WebP photo");
+    }
+    const ext = t => t.split("/")[1].replace("jpeg", "jpg"), stamp = Date.now();
+    const idPath = `${u.id}/id-${stamp}.${ext(idf.type)}`, selfiePath = `${u.id}/selfie-${stamp}.${ext(sf.type)}`;
+    must(await sb.storage.from("verification").upload(idPath, idf, { contentType: idf.type }));
+    must(await sb.storage.from("verification").upload(selfiePath, sf, { contentType: sf.type }));
+    must(await sb.rpc("submit_verification", { p_id_path: idPath, p_selfie_path: selfiePath }));
+    toast("Submitted — we will review it soon"); render();
+  });
   document.querySelectorAll("[data-adm]").forEach(b => b.onclick = async () => {
     try {
       const a = JSON.parse(b.dataset.adm);
@@ -350,7 +428,8 @@ function bind(r, parts, q) {
   });
   on("wl", async (f, d) => {
     const skills = d.role === "worker" ? [...f.skills.selectedOptions].map(o => o.value) : [];
-    must(await sb.rpc("complete_onboarding", { p_role: d.role, p_city: d.city, p_skills: skills, p_rate: Number(d.rate) || 0 }));
+    if (d.account_type === "company" && !(d.company_name || "").trim()) throw new Error("Please enter the company name");
+    must(await sb.rpc("complete_onboarding", { p_role: d.role, p_city: d.city, p_skills: skills, p_rate: Number(d.rate) || 0, p_account_type: d.account_type || "individual", p_company_name: d.account_type === "company" ? d.company_name.trim() : null }));
     await loadUser(); toast("All set!");
     location.hash = d.role === "worker" ? "#/find-jobs" : "#/post-job";
   });
@@ -366,7 +445,8 @@ function bind(r, parts, q) {
 
   on("rf", async (f, d) => {
     const skills = d.role === "worker" ? [...f.skills.selectedOptions].map(o => o.value) : [];
-    const { data, error } = await sb.auth.signUp({ email: d.email, password: d.password, options: { data: { role: d.role, name: d.name, city: d.city, skills, rate: Number(d.rate) || 0, accepted_terms_at: new Date().toISOString() } } });
+    if (d.account_type === "company" && !(d.company_name || "").trim()) throw new Error("Please enter the company name");
+    const { data, error } = await sb.auth.signUp({ email: d.email, password: d.password, options: { data: { role: d.role, name: d.name, city: d.city, skills, rate: Number(d.rate) || 0, accepted_terms_at: new Date().toISOString(), account_type: d.account_type, company_name: d.account_type === "company" ? d.company_name.trim() : "" } } });
     if (error) throw error;
     if (!data.session) { toast("Check your email to confirm your account, then log in"); location.hash = "#/login"; return; }
     await loadUser(); toast("Welcome to WorkLink SA!");
@@ -406,7 +486,7 @@ function bind(r, parts, q) {
   }
 
   document.querySelectorAll("[data-plan]").forEach(b => b.onclick = async () => {
-    if (b.dataset.plan === "free") return;
+    if (b.dataset.plan === "joining") { location.hash = "#/activate"; return; }
     if (!state.user) { toast("Log in first"); location.hash = "#/login"; return; }
     try { must(await sb.from("subscriptions").insert({ user_id: state.user.id, plan: b.dataset.plan })); toast("Request recorded — activates once payment is confirmed"); render(); }
     catch (e) { toast(errMsg(e)); }
