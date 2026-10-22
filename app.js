@@ -33,7 +33,8 @@ async function render() {
   const token = ++renderToken;
   const { parts, q } = parse();
   const r = parts[0] || "home";
-  const routes = { home, "find-jobs": findJobs, job, workers, premium, faq, contact, terms, privacy, login, register, "post-job": postJob, browse };
+  const routes = { home, "find-jobs": findJobs, job, workers, premium, faq, contact, terms, privacy, login, register, "post-job": postJob, browse, welcome };
+  if (state.user && state.user.onboarded === false && r !== "welcome") { location.hash = "#/welcome"; return; }
   chrome(r);
   const app = document.getElementById("app");
   if (!sb) { app.innerHTML = setupNotice(); return; }
@@ -239,13 +240,23 @@ const contact = () => `<div class="wrap page"><h2>Contact us</h2><p class="lead"
 const terms = () => `<div class="wrap page"><h2>Terms of Use</h2><p>WorkLink SA connects people. It does not employ workers, guarantee jobs or take part in payments between users. Users are responsible for the accuracy of their profiles and jobs, and for agreeing prices and safety arrangements. Replace this placeholder with your reviewed legal text before launch.</p></div>`;
 const privacy = () => `<div class="wrap page"><h2>Privacy Policy</h2><p>Explain here what personal information you collect (including ID documents used for verification), why, how long you keep it and how users can request deletion, in line with POPIA. Replace this placeholder with your reviewed policy before launch.</p></div>`;
 
-const login = () => `<div class="wrap page"><h2>Log in</h2><form class="f" id="lf"><label>Email<input name="email" type="email" required></label><label>Password<input name="password" type="password" required></label><button class="btn">Log in</button></form><p>New here? <a href="#/register">Sign up</a></p></div>`;
+const googleBtn = () => `<div style="max-width:560px;margin:18px 0"><div class="meta" style="text-align:center;margin-bottom:8px">or</div><button type="button" class="btn ghost" style="width:100%" data-google>Continue with Google</button></div>`;
+const welcome = () => {
+  const u = state.user;
+  if (!u) return `<div class="wrap page"><div class="empty"><a class="btn" href="#/login">Log in</a></div></div>`;
+  return `<div class="wrap page"><h2>Welcome, ${esc(u.name.split(" ")[0])}!</h2><p class="lead">One last step: tell us how you will use WorkLink SA.</p><form class="f" id="wl">
+  <label>I want to<select name="role"><option value="worker">Find work (worker)</option><option value="customer">Hire people (customer)</option></select></label>
+  <label>City<select name="city">${opts(CITIES)}</select></label>
+  <div id="wlfields"><label>Skills (hold Ctrl/Cmd to pick several)<select name="skills" multiple size="6">${opts(CATEGORIES)}</select></label><label>Hourly rate (R)<input name="rate" type="number" min="0"></label></div>
+  <button class="btn">Finish</button></form></div>`;
+};
+const login = () => `<div class="wrap page"><h2>Log in</h2><form class="f" id="lf"><label>Email<input name="email" type="email" required></label><label>Password<input name="password" type="password" required></label><button class="btn">Log in</button></form>${googleBtn()}<p>New here? <a href="#/register">Sign up</a></p></div>`;
 const register = (_, q) => `<div class="wrap page"><h2>Create your account</h2><form class="f" id="rf">
   <label>I want to<select name="role"><option value="worker" ${q.role === "worker" ? "selected" : ""}>Find work (worker)</option><option value="customer" ${q.role === "customer" ? "selected" : ""}>Hire people (customer)</option></select></label>
   <label>Full name<input name="name" required></label><label>Email<input name="email" type="email" required></label><label>Password (min 6)<input name="password" type="password" minlength="6" required></label>
   <label>City<select name="city">${opts(CITIES)}</select></label>
   <div id="wfields"><label>Skills (hold Ctrl/Cmd to pick several)<select name="skills" multiple size="6">${opts(CATEGORIES)}</select></label><label>Hourly rate (R)<input name="rate" type="number" min="0"></label></div>
-  <button class="btn">Sign up</button></form></div>`;
+  <button class="btn">Sign up</button></form>${googleBtn()}</div>`;
 const postJob = () => {
   const u = state.user;
   if (!u) return `<div class="wrap page"><div class="empty"><h3>Log in to post a job</h3><a class="btn" href="#/login">Log in</a> <a class="btn ghost" href="#/register?role=customer">Sign up</a></div></div>`;
@@ -268,6 +279,18 @@ const must = ({ error }) => { if (error) throw error; };
 const qs = d => new URLSearchParams(Object.entries(d).filter(([, v]) => v)).toString();
 
 function bind(r, parts, q) {
+  document.querySelectorAll("[data-google]").forEach(b => b.onclick = async () => {
+    const { error } = await sb.auth.signInWithOAuth({ provider: "google", options: { redirectTo: location.origin + location.pathname } });
+    if (error) toast(errMsg(error));
+  });
+  on("wl", async (f, d) => {
+    const skills = d.role === "worker" ? [...f.skills.selectedOptions].map(o => o.value) : [];
+    must(await sb.rpc("complete_onboarding", { p_role: d.role, p_city: d.city, p_skills: skills, p_rate: Number(d.rate) || 0 }));
+    await loadUser(); toast("All set!");
+    location.hash = d.role === "worker" ? "#/find-jobs" : "#/post-job";
+  });
+  const wl = document.getElementById("wl");
+  if (wl) { const t = () => document.getElementById("wlfields").style.display = wl.role.value === "worker" ? "" : "none"; wl.role.onchange = t; t(); }
   on("hsearch", (_, d) => { location.hash = "#/find-jobs?q=" + encodeURIComponent(d.q); });
   const tabs = document.querySelectorAll(".tabs button"), steps = document.getElementById("steps");
   if (steps) { steps.innerHTML = stepsHtml("w"); tabs.forEach(b => b.onclick = () => { tabs.forEach(x => x.classList.toggle("on", x === b)); steps.innerHTML = stepsHtml(b.dataset.t); }); }
