@@ -297,7 +297,8 @@ async function admin(_, q) {
   }
   return `<div class="wrap page"><h2>Admin</h2><div class="tabs">${tabs.map(([k, t]) => `<a href="#/admin?tab=${k}" style="text-decoration:none"><button class="${k === tab ? "on" : ""}" type="button">${t}</button></a>`).join("")}</div>${body}</div>`;
 }
-const googleBtn = () => `<div style="max-width:560px;margin:18px 0"><div class="meta" style="text-align:center;margin-bottom:8px">or</div><button type="button" class="btn ghost" style="width:100%" data-google>Continue with Google</button></div>`;
+const googleBtn = () => `<div style="max-width:560px;margin:18px 0"><div class="meta" style="text-align:center;margin-bottom:8px">or</div><button type="button" class="btn ghost" style="width:100%" data-google>Continue with Google</button><p class="meta" style="text-align:center">By continuing with Google you confirm you are 18 or older and agree to the <a href="#/terms">Terms</a> and <a href="#/privacy">Privacy Policy</a>.</p></div>`;
+const agreeBox = () => `<label style="display:flex;gap:10px;align-items:flex-start;font-weight:400"><input type="checkbox" name="agree" required style="width:auto;margin-top:4px"><span>I am 18 or older and agree to the <a href="#/terms" target="_blank">Terms of Use</a> and <a href="#/privacy" target="_blank">Privacy Policy</a>.</span></label>`;
 const welcome = () => {
   const u = state.user;
   if (!u) return `<div class="wrap page"><div class="empty"><a class="btn" href="#/login">Log in</a></div></div>`;
@@ -305,7 +306,7 @@ const welcome = () => {
   <label>I want to<select name="role"><option value="worker">Find work (worker)</option><option value="customer">Hire people (customer)</option></select></label>
   <label>City<select name="city">${opts(CITIES)}</select></label>
   <div id="wlfields"><label>Skills (hold Ctrl/Cmd to pick several)<select name="skills" multiple size="6">${opts(CATEGORIES)}</select></label><label>Hourly rate (R)<input name="rate" type="number" min="0"></label></div>
-  <button class="btn">Finish</button></form></div>`;
+  ${agreeBox()}<button class="btn">Finish</button></form></div>`;
 };
 const login = () => `<div class="wrap page"><h2>Log in</h2><form class="f" id="lf"><label>Email<input name="email" type="email" required></label><label>Password<input name="password" type="password" required></label><button class="btn">Log in</button></form>${googleBtn()}<p>New here? <a href="#/register">Sign up</a></p></div>`;
 const register = (_, q) => `<div class="wrap page"><h2>Create your account</h2><form class="f" id="rf">
@@ -313,7 +314,7 @@ const register = (_, q) => `<div class="wrap page"><h2>Create your account</h2><
   <label>Full name<input name="name" required></label><label>Email<input name="email" type="email" required></label><label>Password (min 6)<input name="password" type="password" minlength="6" required></label>
   <label>City<select name="city">${opts(CITIES)}</select></label>
   <div id="wfields"><label>Skills (hold Ctrl/Cmd to pick several)<select name="skills" multiple size="6">${opts(CATEGORIES)}</select></label><label>Hourly rate (R)<input name="rate" type="number" min="0"></label></div>
-  <button class="btn">Sign up</button></form>${googleBtn()}</div>`;
+  ${agreeBox()}<button class="btn">Sign up</button></form>${googleBtn()}</div>`;
 const postJob = () => {
   const u = state.user;
   if (!u) return `<div class="wrap page"><div class="empty"><h3>Log in to post a job</h3><a class="btn" href="#/login">Log in</a> <a class="btn ghost" href="#/register?role=customer">Sign up</a></div></div>`;
@@ -365,7 +366,7 @@ function bind(r, parts, q) {
 
   on("rf", async (f, d) => {
     const skills = d.role === "worker" ? [...f.skills.selectedOptions].map(o => o.value) : [];
-    const { data, error } = await sb.auth.signUp({ email: d.email, password: d.password, options: { data: { role: d.role, name: d.name, city: d.city, skills, rate: Number(d.rate) || 0 } } });
+    const { data, error } = await sb.auth.signUp({ email: d.email, password: d.password, options: { data: { role: d.role, name: d.name, city: d.city, skills, rate: Number(d.rate) || 0, accepted_terms_at: new Date().toISOString() } } });
     if (error) throw error;
     if (!data.session) { toast("Check your email to confirm your account, then log in"); location.hash = "#/login"; return; }
     await loadUser(); toast("Welcome to WorkLink SA!");
