@@ -1,19 +1,26 @@
-/* WorkLink SA — front-end demo. Data lives in localStorage (no backend). */
-const CONFIG = { whatsapp: "27798387344", province: "Gauteng" };
+/* WorkLink SA — Supabase-backed. Settings live in config.js (publishable key only!). */
+const CFG = window.WL_CONFIG || {};
 const CATEGORIES = ["Construction","Carpentry","Welding","Plumbing","Electrical","Painting","Cleaning","Gardening","Moving","Car Wash","Delivery","Security","General Labour","Digital/Online Work","Other"];
 const CITIES = ["Midrand","Johannesburg","Soweto","Tembisa","Pretoria","Germiston","Sandton","Centurion","Randburg","Benoni"];
 
-/* ---------- storage ---------- */
-const db = {
-  get(k, d) { try { return JSON.parse(localStorage.getItem("wl_" + k)) ?? d; } catch { return d; } },
-  set(k, v) { try { localStorage.setItem("wl_" + k, JSON.stringify(v)); } catch {} },
-};
-const uid = () => Math.random().toString(36).slice(2, 10);
+const configured = !!(CFG.supabaseUrl && CFG.supabaseKey && !CFG.supabaseKey.startsWith("PASTE") && window.supabase);
+const sb = configured ? window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey) : null;
+const state = { user: null };
+
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const rand = n => "R" + Number(n).toLocaleString("en-ZA");
-const me = () => db.get("users", []).find(u => u.id === db.get("session", null));
-const toast = m => { const t = document.getElementById("toast"); t.textContent = m; t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => t.hidden = true, 2600); };
+const toast = m => { const t = document.getElementById("toast"); t.textContent = m; t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => t.hidden = true, 3200); };
 const opts = (list, sel, any) => (any ? `<option value="">${any}</option>` : "") + list.map(x => `<option ${x === sel ? "selected" : ""}>${esc(x)}</option>`).join("");
+const errMsg = e => (e && e.message) || "Something went wrong";
+
+async function loadUser() {
+  state.user = null;
+  if (!sb) return;
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) return;
+  const { data } = await sb.from("profiles").select("*").eq("id", session.user.id).maybeSingle();
+  state.user = data || null;
+}
 
 /* ---------- router ---------- */
 function parse() {
@@ -21,47 +28,85 @@ function parse() {
   const [path, qs] = raw.split("?");
   return { parts: path.split("/").filter(Boolean).map(decodeURIComponent), q: Object.fromEntries(new URLSearchParams(qs || "")) };
 }
-function render() {
+let renderToken = 0;
+async function render() {
+  const token = ++renderToken;
   const { parts, q } = parse();
   const r = parts[0] || "home";
   const routes = { home, "find-jobs": findJobs, job, workers, premium, faq, contact, terms, privacy, login, register, "post-job": postJob, browse };
-  document.getElementById("app").innerHTML = (routes[r] || home)(parts, q);
   chrome(r);
+  const app = document.getElementById("app");
+  if (!sb) { app.innerHTML = setupNotice(); return; }
+  app.innerHTML = `<div class="wrap page"><p class="meta">Loading…</p></div>`;
+  let html;
+  try { html = await (routes[r] || home)(parts, q); }
+  catch (e) { html = `<div class="wrap page"><div class="empty"><h3>Could not load this page</h3><p>${esc(errMsg(e))}</p></div></div>`; }
+  if (token !== renderToken) return;
+  app.innerHTML = html;
   window.scrollTo(0, 0);
   bind(r, parts, q);
 }
+const setupNotice = () => `<div class="wrap page"><div class="note"><b>Almost there.</b> Open <code>config.js</code> and paste your Supabase <b>publishable</b> key (never the secret key), then reload.</div></div>`;
+
 function chrome(r) {
   const links = [["", "Home"], ["find-jobs", "Find Jobs"], ["workers", "Find Workers"], ["premium", "Premium"]];
   document.getElementById("nav").innerHTML = links.map(([h, t]) => `<a class="${(r === "home" && !h) || r === h ? "on" : ""}" href="#/${h}">${t}</a>`).join("");
-  const u = me();
+  const u = state.user;
   document.getElementById("auth").innerHTML = u
     ? `<span class="meta">Hi, ${esc(u.name.split(" ")[0])}</span><button class="btn ghost sm" id="logout">Log out</button>`
     : `<a class="btn ghost sm" href="#/login">Log in</a><a class="btn sm" href="#/register">Sign up</a>`;
-  const lo = document.getElementById("logout"); if (lo) lo.onclick = () => { db.set("session", null); toast("Logged out"); location.hash = "#/"; render(); };
-  document.getElementById("wa").href = `https://wa.me/${CONFIG.whatsapp}?text=${encodeURIComponent("Hi WorkLink SA, I need some help with the platform.")}`;
+  const lo = document.getElementById("logout");
+  if (lo) lo.onclick = async () => { await sb.auth.signOut(); state.user = null; toast("Logged out"); location.hash = "#/"; render(); };
+  document.getElementById("wa").href = `https://wa.me/${CFG.whatsapp}?text=${encodeURIComponent("Hi WorkLink SA, I need some help with the platform.")}`;
   document.getElementById("footer").innerHTML = `<div class="wrap"><div class="brand" style="color:#fff"><span class="logo">W</span> WorkLink SA</div><p>Find Work. Find Workers. Build Your Future.</p>
   <a href="#/find-jobs">Find Jobs</a><a href="#/workers">Find Workers</a><a href="#/premium">Premium</a><a href="#/faq">FAQ</a><a href="#/contact">Contact</a><a href="#/terms">Terms of Use</a><a href="#/privacy">Privacy Policy</a><br>
   <a href="#/browse/Plumbing/Midrand">Plumbers in Midrand</a><a href="#/browse/Painting/Tembisa">Painters in Tembisa</a><a href="#/browse/Gardening/Soweto">Gardeners in Soweto</a></div>`;
 }
 
+/* ---------- data helpers ---------- */
+async function fetchJobs(f = {}, limit) {
+  let qb = sb.from("jobs").select("*").order("featured", { ascending: false }).order("created_at", { ascending: false });
+  if (f.category) qb = qb.eq("category", f.category);
+  if (f.city) qb = qb.eq("city", f.city);
+  if (f.q) { const t = f.q.replace(/[%,()]/g, " "); qb = qb.or(`title.ilike.%${t}%,description.ilike.%${t}%`); }
+  if (limit) qb = qb.limit(limit);
+  const { data, error } = await qb;
+  if (error) throw error;
+  return data || [];
+}
+async function fetchWorkers(f = {}) {
+  let qb = sb.from("profiles").select("*").eq("role", "worker").order("premium", { ascending: true });
+  if (f.category) qb = qb.contains("skills", [f.category]);
+  if (f.city) qb = qb.eq("city", f.city);
+  if (f.q) { const t = f.q.replace(/[%,()]/g, " "); qb = qb.ilike("name", `%${t}%`); }
+  const { data, error } = await qb;
+  if (error) throw error;
+  return data || [];
+}
+
 /* ---------- shared pieces ---------- */
-const jobCard = j => `<div class="card"><div class="job"><div><h3><a href="#/job/${j.id}">${esc(j.title)}</a></h3>
+const jobCard = j => `<div class="card"><div class="job"><div><h3><a href="#/job/${esc(j.id)}">${esc(j.title)}</a></h3>
   <p>${esc(j.description).slice(0, 140)}${j.description.length > 140 ? "…" : ""}</p>
   <div class="meta">${esc(j.category)} · ${esc(j.city)} · Budget ${rand(j.budget)}</div></div>
   <div>${j.featured ? '<span class="badge gold">Featured</span>' : `<span class="badge">${esc(j.status)}</span>`}</div></div></div>`;
-const jobs = () => db.get("jobs", []).sort((a, b) => (b.featured | 0) - (a.featured | 0) || b.created - a.created);
+const jobsHtml = list => list.length
+  ? `<div class="grid" style="grid-template-columns:1fr">${list.map(jobCard).join("")}</div>`
+  : `<div class="empty"><h3>No jobs match yet</h3><p>Try another category or city, or post one yourself.</p><a class="btn" href="#/post-job">Post a Job</a></div>`;
+const workersHtml = list => list.length
+  ? `<div class="grid">${list.map(w => `<div class="card"><h3>${esc(w.name)} ${w.premium === "active" ? '<span class="badge gold">Premium</span>' : ""}</h3><p>${esc((w.skills || []).join(", ") || "No skills listed")}</p><div class="meta">${esc(w.city || "")} · ${w.rate ? rand(w.rate) + "/hr" : "Rate on request"} · <span class="badge grey">${w.verified ? "Verified" : "Not yet verified"}</span></div></div>`).join("")}</div>`
+  : `<div class="empty"><h3>No workers listed yet</h3><p>Workers who sign up appear here.</p><a class="btn" href="#/register?role=worker">Join as a worker</a></div>`;
 
 /* ---------- pages ---------- */
-function home() {
-  const latest = jobs().slice(0, 6);
+async function home() {
+  const latest = await fetchJobs({}, 6);
   return `
   <section class="hero"><div class="wrap">
-    <span class="pill">Now launching in ${CONFIG.province}</span>
+    <span class="pill">Now launching in ${esc(CFG.province)}</span>
     <h1>Find Work. Find Workers. Build Your Future.</h1>
     <p>WorkLink SA connects skilled workers with customers and businesses looking for reliable help.</p>
     <div class="cta"><a class="btn alt" href="#/find-jobs">Find Work</a><a class="btn ghost" href="#/post-job">Post a Job</a></div>
-    <form class="searchbar" id="hsearch"><input name="q" placeholder="${CONFIG.province} Search — e.g. plumber, painter"><button class="btn">Search</button></form>
-    <div class="chips"><span>✔ Admin-approved verification</span><span>✔ 15 work categories</span><span>✔ Launching in ${CONFIG.province} – more provinces coming soon</span><span>✔ Free to browse, post and apply. Premium is optional.</span></div>
+    <form class="searchbar" id="hsearch"><input name="q" placeholder="${esc(CFG.province)} Search — e.g. plumber, painter"><button class="btn">Search</button></form>
+    <div class="chips"><span>✔ Admin-approved verification</span><span>✔ 15 work categories</span><span>✔ Launching in ${esc(CFG.province)} – more provinces coming soon</span><span>✔ Free to browse, post and apply. Premium is optional.</span></div>
   </div></section>
 
   <section class="s"><div class="wrap"><div class="eyebrow">Popular categories</div><h2>Work that keeps South Africa moving</h2>
@@ -126,49 +171,51 @@ const STEPS = {
 };
 const stepsHtml = k => STEPS[k].map(([t, d], i) => `<div class="card"><div class="step">Step ${i + 1}</div><h3>${t}</h3><p>${d}</p></div>`).join("");
 
-function findJobs(_, q) {
+async function findJobs(_, q) {
+  const list = await fetchJobs(q);
   return `<div class="wrap page"><h2>Find Jobs</h2>
   <form class="filters" id="jf"><input name="q" placeholder="Search jobs" value="${esc(q.q || "")}"><select name="category">${opts(CATEGORIES, q.category, "All categories")}</select><select name="city">${opts(CITIES, q.city, "All cities")}</select><button class="btn">Filter</button></form>
-  <div id="jlist"></div></div>`;
+  ${jobsHtml(list)}</div>`;
 }
-function listJobs(q) {
-  const t = (q.q || "").toLowerCase();
-  const list = jobs().filter(j => (!q.category || j.category === q.category) && (!q.city || j.city === q.city) && (!t || (j.title + j.description).toLowerCase().includes(t)));
-  return list.length ? `<div class="grid" style="grid-template-columns:1fr">${list.map(jobCard).join("")}</div>` : `<div class="empty"><h3>No jobs match yet</h3><p>Try another category or city, or post one yourself.</p><a class="btn" href="#/post-job">Post a Job</a></div>`;
-}
-function browse([, cat, city]) {
-  return `<div class="wrap page"><h2>${esc(cat)} in ${esc(city)}</h2>${listJobs({ category: cat, city })}
-  <h3 style="margin-top:32px">Workers</h3>${workerList({ category: cat, city })}</div>`;
+async function browse([, cat, city]) {
+  const [js, ws] = await Promise.all([fetchJobs({ category: cat, city }), fetchWorkers({ category: cat, city })]);
+  return `<div class="wrap page"><h2>${esc(cat)} in ${esc(city)}</h2>${jobsHtml(js)}<h3 style="margin-top:32px">Workers</h3>${workersHtml(ws)}</div>`;
 }
 
-function job([, id]) {
-  const j = db.get("jobs", []).find(x => x.id === id);
+async function job([, id]) {
+  const { data: j } = await sb.from("jobs").select("*").eq("id", id).maybeSingle();
   if (!j) return `<div class="wrap page"><div class="empty"><h3>Job not found</h3><a href="#/find-jobs">Back to jobs</a></div></div>`;
-  const u = me(), apps = db.get("apps", []).filter(a => a.jobId === id);
-  const mine = u && j.ownerId === u.id;
+  const u = state.user, mine = u && j.owner_id === u.id;
+  let apps = [], applied = false;
+  if (mine) {
+    const { data } = await sb.from("applications").select("*, profiles(name)").eq("job_id", id).order("created_at");
+    apps = data || [];
+  } else if (u && u.role === "worker") {
+    const { data } = await sb.from("applications").select("id").eq("job_id", id).eq("worker_id", u.id);
+    applied = !!(data && data.length);
+  }
+  const body = mine
+    ? `<h3>Applicants (${apps.length})</h3>${apps.map(a => `<div class="card" style="margin:8px 0"><b>${esc(a.profiles?.name || "Worker")}</b> — ${rand(a.price)}<p>${esc(a.message)}</p>${j.status === "Open" ? `<button class="btn sm" data-pick="${esc(a.id)}">Select</button>` : a.picked ? '<span class="badge">Selected</span>' : ""}</div>`).join("") || '<p class="meta">No applicants yet.</p>'}${j.status === "Assigned" ? `<button class="btn" id="done">Mark completed</button>` : ""}`
+    : !u ? `<p><a class="btn" href="#/login">Log in as a worker to apply</a></p>`
+    : u.role !== "worker" ? `<p class="meta">Only workers can apply for jobs.</p>`
+    : applied ? `<p><span class="badge">You have applied</span></p>`
+    : j.status !== "Open" ? `<p class="meta">This job is no longer open.</p>`
+    : `<h3>Apply for this job</h3><form class="f" id="apply"><label>Your price (R)<input name="price" type="number" min="1" required></label><label>Cover message<textarea name="message" required></textarea></label><button class="btn">Send application</button></form>`;
   return `<div class="wrap page"><a href="#/find-jobs">← All jobs</a><h2>${esc(j.title)}</h2>
   <p class="meta">${esc(j.category)} · ${esc(j.city)} · Budget ${rand(j.budget)} · <span class="badge">${esc(j.status)}</span></p>
-  <div class="card"><p style="color:var(--ink)">${esc(j.description)}</p></div>
-  ${mine ? `<h3>Applicants (${apps.length})</h3>${apps.map(a => `<div class="card" style="margin:8px 0"><b>${esc(a.workerName)}</b> — ${rand(a.price)}<p>${esc(a.message)}</p>${j.status === "Open" ? `<button class="btn sm" data-pick="${a.id}">Select</button>` : a.picked ? '<span class="badge">Selected</span>' : ""}</div>`).join("") || '<p class="meta">No applicants yet.</p>'}${j.status === "Assigned" ? `<button class="btn" id="done">Mark completed</button>` : ""}`
-  : u && u.role === "worker" && j.status === "Open"
-    ? `<h3>Apply for this job</h3><form class="f" id="apply"><label>Your price (R)<input name="price" type="number" min="1" required></label><label>Cover message<textarea name="message" required></textarea></label><button class="btn">Send application</button></form>`
-    : !u ? `<p><a class="btn" href="#/login">Log in as a worker to apply</a></p>` : ""}
-  <p style="margin-top:20px"><button class="btn ghost sm" id="report">Report this job</button></p></div>`;
+  <div class="card"><p style="color:var(--ink)">${esc(j.description)}</p></div>${body}
+  ${u ? `<p style="margin-top:20px"><button class="btn ghost sm" id="report">Report this job</button></p>` : ""}</div>`;
 }
 
-function workerList(f = {}) {
-  const t = (f.q || "").toLowerCase();
-  const list = db.get("users", []).filter(u => u.role === "worker" && (!f.category || (u.skills || []).includes(f.category)) && (!f.city || u.city === f.city) && (!t || (u.name + (u.skills || []).join(" ")).toLowerCase().includes(t)))
-    .sort((a, b) => (b.premium === "active") - (a.premium === "active"));
-  return list.length ? `<div class="grid">${list.map(w => `<div class="card"><h3>${esc(w.name)} ${w.premium === "active" ? '<span class="badge gold">Premium</span>' : ""}</h3><p>${esc((w.skills || []).join(", ") || "No skills listed")}</p><div class="meta">${esc(w.city)} · ${w.rate ? rand(w.rate) + "/hr" : "Rate on request"} · <span class="badge grey">${w.verified ? "Verified" : "Not yet verified"}</span></div></div>`).join("")}</div>`
-    : `<div class="empty"><h3>No workers listed yet</h3><p>Workers who sign up appear here.</p><a class="btn" href="#/register?role=worker">Join as a worker</a></div>`;
-}
-function workers(_, q) {
-  return `<div class="wrap page"><h2>Find Workers</h2><form class="filters" id="wf"><input name="q" placeholder="Search by name or skill" value="${esc(q.q || "")}"><select name="category">${opts(CATEGORIES, q.category, "All skills")}</select><select name="city">${opts(CITIES, q.city, "All cities")}</select><button class="btn">Filter</button></form>${workerList(q)}</div>`;
+async function workers(_, q) {
+  const list = await fetchWorkers(q);
+  return `<div class="wrap page"><h2>Find Workers</h2><form class="filters" id="wf"><input name="q" placeholder="Search by name" value="${esc(q.q || "")}"><select name="category">${opts(CATEGORIES, q.category, "All skills")}</select><select name="city">${opts(CITIES, q.city, "All cities")}</select><button class="btn">Filter</button></form>${workersHtml(list)}</div>`;
 }
 
-function premium() {
-  const u = me();
+async function premium() {
+  const u = state.user;
+  let subs = [];
+  if (u) { const { data } = await sb.from("subscriptions").select("*").eq("user_id", u.id).order("created_at", { ascending: false }); subs = data || []; }
   const plan = (id, name, price, desc, items) => `<div class="card"><h3>${name}</h3><div class="price">${price}</div><p>${desc}</p><ul class="tick">${items.map(i => `<li>${i}</li>`).join("")}</ul><button class="btn" data-plan="${id}">${id === "free" ? "Current plan" : "Request " + name}</button></div>`;
   return `<div class="wrap page"><div class="eyebrow">Premium</div><h2>Stand out when it matters most</h2>
   <div class="note">Subscriptions are recorded as <b>pending</b> and only activate once WorkLink SA confirms payment. Nothing is ever marked paid automatically.</div>
@@ -176,7 +223,7 @@ function premium() {
   ${plan("worker", "Worker Premium", "R59/mo", "Free for your first 3 months", ["Profile shown to customers first", "Premium badge"])}
   ${plan("business", "Business Premium", "R199/mo", "For businesses posting often", ["Keep multiple jobs visible", "Priority support"])}
   ${plan("featured", "Featured Job", "R29", "One job, top of the list", ["Pinned above other jobs"])}</div>
-  ${u ? `<p class="meta">Your requests: ${db.get("subs", []).filter(s => s.userId === u.id).map(s => `${esc(s.plan)} (${esc(s.status)})`).join(", ") || "none"}</p>` : ""}</div>`;
+  ${u ? `<p class="meta">Your requests: ${subs.map(s => `${esc(s.plan)} (${esc(s.status)})`).join(", ") || "none"}</p>` : ""}</div>`;
 }
 
 const FAQ = [
@@ -192,83 +239,91 @@ const contact = () => `<div class="wrap page"><h2>Contact us</h2><p class="lead"
 const terms = () => `<div class="wrap page"><h2>Terms of Use</h2><p>WorkLink SA connects people. It does not employ workers, guarantee jobs or take part in payments between users. Users are responsible for the accuracy of their profiles and jobs, and for agreeing prices and safety arrangements. Replace this placeholder with your reviewed legal text before launch.</p></div>`;
 const privacy = () => `<div class="wrap page"><h2>Privacy Policy</h2><p>Explain here what personal information you collect (including ID documents used for verification), why, how long you keep it and how users can request deletion, in line with POPIA. Replace this placeholder with your reviewed policy before launch.</p></div>`;
 
-function login() {
-  return `<div class="wrap page"><h2>Log in</h2><form class="f" id="lf"><label>Email<input name="email" type="email" required></label><label>Password<input name="password" type="password" required></label><button class="btn">Log in</button></form><p>New here? <a href="#/register">Sign up</a></p></div>`;
-}
-function register(_, q) {
-  return `<div class="wrap page"><h2>Create your account</h2><form class="f" id="rf">
+const login = () => `<div class="wrap page"><h2>Log in</h2><form class="f" id="lf"><label>Email<input name="email" type="email" required></label><label>Password<input name="password" type="password" required></label><button class="btn">Log in</button></form><p>New here? <a href="#/register">Sign up</a></p></div>`;
+const register = (_, q) => `<div class="wrap page"><h2>Create your account</h2><form class="f" id="rf">
   <label>I want to<select name="role"><option value="worker" ${q.role === "worker" ? "selected" : ""}>Find work (worker)</option><option value="customer" ${q.role === "customer" ? "selected" : ""}>Hire people (customer)</option></select></label>
   <label>Full name<input name="name" required></label><label>Email<input name="email" type="email" required></label><label>Password (min 6)<input name="password" type="password" minlength="6" required></label>
   <label>City<select name="city">${opts(CITIES)}</select></label>
   <div id="wfields"><label>Skills (hold Ctrl/Cmd to pick several)<select name="skills" multiple size="6">${opts(CATEGORIES)}</select></label><label>Hourly rate (R)<input name="rate" type="number" min="0"></label></div>
   <button class="btn">Sign up</button></form></div>`;
-}
-function postJob() {
-  const u = me();
+const postJob = () => {
+  const u = state.user;
   if (!u) return `<div class="wrap page"><div class="empty"><h3>Log in to post a job</h3><a class="btn" href="#/login">Log in</a> <a class="btn ghost" href="#/register?role=customer">Sign up</a></div></div>`;
+  if (u.role !== "customer") return `<div class="wrap page"><div class="empty"><h3>Only customer accounts can post jobs</h3><p>Sign up with a customer account to hire people.</p></div></div>`;
   return `<div class="wrap page"><h2>Post a job</h2><form class="f" id="pj"><label>Title<input name="title" required></label><label>Category<select name="category">${opts(CATEGORIES)}</select></label><label>City<select name="city">${opts(CITIES, u.city)}</select></label><label>Budget (R)<input name="budget" type="number" min="1" required></label><label>Description<textarea name="description" required></textarea></label><button class="btn">Post job (free)</button></form></div>`;
-}
+};
 
 /* ---------- behaviour ---------- */
-const form = id => { const f = document.getElementById(id); return f ? Object.fromEntries(new FormData(f)) : null; };
-const on = (id, fn) => { const f = document.getElementById(id); if (f) f.onsubmit = e => { e.preventDefault(); fn(f, Object.fromEntries(new FormData(f))); }; };
+const on = (id, fn) => {
+  const f = document.getElementById(id); if (!f) return;
+  f.onsubmit = async e => {
+    e.preventDefault();
+    const btn = f.querySelector("button:not([type=button])"); if (btn) btn.disabled = true;
+    try { await fn(f, Object.fromEntries(new FormData(f))); }
+    catch (err) { toast(errMsg(err)); }
+    finally { if (btn) btn.disabled = false; }
+  };
+};
+const must = ({ error }) => { if (error) throw error; };
+const qs = d => new URLSearchParams(Object.entries(d).filter(([, v]) => v)).toString();
 
 function bind(r, parts, q) {
-  on("hsearch", (_, d) => location.hash = "#/find-jobs?q=" + encodeURIComponent(d.q));
+  on("hsearch", (_, d) => { location.hash = "#/find-jobs?q=" + encodeURIComponent(d.q); });
   const tabs = document.querySelectorAll(".tabs button"), steps = document.getElementById("steps");
   if (steps) { steps.innerHTML = stepsHtml("w"); tabs.forEach(b => b.onclick = () => { tabs.forEach(x => x.classList.toggle("on", x === b)); steps.innerHTML = stepsHtml(b.dataset.t); }); }
+  on("jf", (_, d) => { location.hash = "#/find-jobs?" + qs(d); });
+  on("wf", (_, d) => { location.hash = "#/workers?" + qs(d); });
 
-  const jl = document.getElementById("jlist"); if (jl) jl.innerHTML = listJobs(q);
-  on("jf", (_, d) => location.hash = "#/find-jobs?" + new URLSearchParams(Object.entries(d).filter(([, v]) => v)));
-  on("wf", (_, d) => location.hash = "#/workers?" + new URLSearchParams(Object.entries(d).filter(([, v]) => v)));
+  on("cf", async (f, d) => { must(await sb.from("contact_messages").insert({ name: d.name, email: d.email, message: d.message })); f.reset(); toast("Message sent — we will get back to you"); });
 
-  on("cf", f => { db.set("messages", [...db.get("messages", []), { id: uid(), ...Object.fromEntries(new FormData(f)), at: Date.now() }]); f.reset(); toast("Message saved — we will get back to you"); });
-
-  on("rf", (f, d) => {
-    const users = db.get("users", []);
-    if (users.some(u => u.email.toLowerCase() === d.email.toLowerCase())) return toast("That email is already registered");
-    const user = { id: uid(), role: d.role, name: d.name, email: d.email, password: d.password, city: d.city, verified: false, premium: "none" };
-    if (d.role === "worker") { user.skills = [...f.skills.selectedOptions].map(o => o.value); user.rate = Number(d.rate) || 0; }
-    db.set("users", [...users, user]); db.set("session", user.id); toast("Welcome to WorkLink SA!");
-    location.hash = d.role === "worker" ? "#/find-jobs" : "#/post-job"; render();
+  on("rf", async (f, d) => {
+    const skills = d.role === "worker" ? [...f.skills.selectedOptions].map(o => o.value) : [];
+    const { data, error } = await sb.auth.signUp({ email: d.email, password: d.password, options: { data: { role: d.role, name: d.name, city: d.city, skills, rate: Number(d.rate) || 0 } } });
+    if (error) throw error;
+    if (!data.session) { toast("Check your email to confirm your account, then log in"); location.hash = "#/login"; return; }
+    await loadUser(); toast("Welcome to WorkLink SA!");
+    location.hash = d.role === "worker" ? "#/find-jobs" : "#/post-job";
   });
-  const rf = document.getElementById("rf"); if (rf) { const t = () => document.getElementById("wfields").style.display = rf.role.value === "worker" ? "" : "none"; rf.role.onchange = t; t(); }
+  const rf = document.getElementById("rf");
+  if (rf) { const t = () => document.getElementById("wfields").style.display = rf.role.value === "worker" ? "" : "none"; rf.role.onchange = t; t(); }
 
-  on("lf", (_, d) => {
-    const u = db.get("users", []).find(x => x.email.toLowerCase() === d.email.toLowerCase() && x.password === d.password);
-    if (!u) return toast("Wrong email or password");
-    db.set("session", u.id); toast("Logged in"); location.hash = "#/"; render();
+  on("lf", async (_, d) => {
+    const { error } = await sb.auth.signInWithPassword({ email: d.email, password: d.password });
+    if (error) throw error;
+    await loadUser(); toast("Logged in"); location.hash = "#/"; render();
   });
 
-  on("pj", (_, d) => {
-    const u = me();
-    db.set("jobs", [...db.get("jobs", []), { id: uid(), ownerId: u.id, ...d, budget: Number(d.budget), status: "Open", featured: false, created: Date.now() }]);
+  on("pj", async (_, d) => {
+    must(await sb.from("jobs").insert({ owner_id: state.user.id, title: d.title, category: d.category, city: d.city, budget: Number(d.budget), description: d.description }));
     toast("Job posted"); location.hash = "#/find-jobs";
   });
 
   if (r === "job") {
-    const id = parts[1], u = me();
-    on("apply", (f, d) => {
-      const apps = db.get("apps", []);
-      if (apps.some(a => a.jobId === id && a.workerId === u.id)) return toast("You already applied");
-      db.set("apps", [...apps, { id: uid(), jobId: id, workerId: u.id, workerName: u.name, price: Number(d.price), message: d.message, picked: false }]);
+    const id = parts[1], u = state.user;
+    on("apply", async (_, d) => {
+      must(await sb.from("applications").insert({ job_id: id, worker_id: u.id, price: Number(d.price), message: d.message }));
       toast("Application sent"); render();
     });
-    document.querySelectorAll("[data-pick]").forEach(b => b.onclick = () => {
-      db.set("apps", db.get("apps", []).map(a => a.id === b.dataset.pick ? { ...a, picked: true } : a));
-      db.set("jobs", db.get("jobs", []).map(j => j.id === id ? { ...j, status: "Assigned" } : j)); toast("Worker selected"); render();
+    document.querySelectorAll("[data-pick]").forEach(b => b.onclick = async () => {
+      try {
+        must(await sb.from("applications").update({ picked: true }).eq("id", b.dataset.pick));
+        must(await sb.from("jobs").update({ status: "Assigned" }).eq("id", id));
+        toast("Worker selected"); render();
+      } catch (e) { toast(errMsg(e)); }
     });
-    const done = document.getElementById("done"); if (done) done.onclick = () => { db.set("jobs", db.get("jobs", []).map(j => j.id === id ? { ...j, status: "Completed" } : j)); toast("Marked completed"); render(); };
-    const rep = document.getElementById("report"); if (rep) rep.onclick = () => { db.set("reports", [...db.get("reports", []), { id: uid(), jobId: id, by: u?.id || null, at: Date.now() }]); toast("Report sent to administrators"); };
+    const done = document.getElementById("done");
+    if (done) done.onclick = async () => { try { must(await sb.from("jobs").update({ status: "Completed" }).eq("id", id)); toast("Marked completed"); render(); } catch (e) { toast(errMsg(e)); } };
+    const rep = document.getElementById("report");
+    if (rep) rep.onclick = async () => { try { must(await sb.from("reports").insert({ job_id: id, reporter_id: u.id })); toast("Report sent to administrators"); } catch (e) { toast(errMsg(e)); } };
   }
 
-  document.querySelectorAll("[data-plan]").forEach(b => b.onclick = () => {
-    const u = me(); if (b.dataset.plan === "free") return;
-    if (!u) { toast("Log in first"); location.hash = "#/login"; return; }
-    db.set("subs", [...db.get("subs", []), { id: uid(), userId: u.id, plan: b.dataset.plan, status: "pending payment confirmation", at: Date.now() }]);
-    toast("Request recorded — activates once payment is confirmed"); render();
+  document.querySelectorAll("[data-plan]").forEach(b => b.onclick = async () => {
+    if (b.dataset.plan === "free") return;
+    if (!state.user) { toast("Log in first"); location.hash = "#/login"; return; }
+    try { must(await sb.from("subscriptions").insert({ user_id: state.user.id, plan: b.dataset.plan })); toast("Request recorded — activates once payment is confirmed"); render(); }
+    catch (e) { toast(errMsg(e)); }
   });
 }
 
 window.addEventListener("hashchange", render);
-render();
+loadUser().then(render);
