@@ -33,7 +33,7 @@ async function render() {
   const token = ++renderToken;
   const { parts, q } = parse();
   const r = parts[0] || "home";
-  const routes = { home, "find-jobs": findJobs, job, workers, premium, faq, contact, terms, privacy, login, register, "post-job": postJob, browse, welcome };
+  const routes = { home, "find-jobs": findJobs, job, workers, premium, faq, contact, terms, privacy, login, register, "post-job": postJob, browse, welcome, admin };
   if (state.user && state.user.onboarded === false && r !== "welcome") { location.hash = "#/welcome"; return; }
   chrome(r);
   const app = document.getElementById("app");
@@ -51,6 +51,7 @@ const setupNotice = () => `<div class="wrap page"><div class="note"><b>Almost th
 
 function chrome(r) {
   const links = [["", "Home"], ["find-jobs", "Find Jobs"], ["workers", "Find Workers"], ["premium", "Premium"]];
+  if (state.user && state.user.is_admin) links.push(["admin", "Admin"]);
   document.getElementById("nav").innerHTML = links.map(([h, t]) => `<a class="${(r === "home" && !h) || r === h ? "on" : ""}" href="#/${h}">${t}</a>`).join("");
   const u = state.user;
   document.getElementById("auth").innerHTML = u
@@ -240,6 +241,36 @@ const contact = () => `<div class="wrap page"><h2>Contact us</h2><p class="lead"
 const terms = () => `<div class="wrap page"><h2>Terms of Use</h2><p>WorkLink SA connects people. It does not employ workers, guarantee jobs or take part in payments between users. Users are responsible for the accuracy of their profiles and jobs, and for agreeing prices and safety arrangements. Replace this placeholder with your reviewed legal text before launch.</p></div>`;
 const privacy = () => `<div class="wrap page"><h2>Privacy Policy</h2><p>Explain here what personal information you collect (including ID documents used for verification), why, how long you keep it and how users can request deletion, in line with POPIA. Replace this placeholder with your reviewed policy before launch.</p></div>`;
 
+const admBtn = (label, fn, args, cls = "") => `<button class="btn sm ${cls}" data-adm="${esc(JSON.stringify({ fn, args }))}">${label}</button>`;
+async function admin(_, q) {
+  const u = state.user;
+  if (!u || !u.is_admin) return `<div class="wrap page"><div class="empty"><h3>Admins only</h3><a href="#/">Back home</a></div></div>`;
+  const tab = q.tab || "subs";
+  const tabs = [["subs", "Subscriptions"], ["workers", "Workers"], ["jobs", "Jobs"], ["reports", "Reports"], ["messages", "Messages"]];
+  const date = d => new Date(d).toLocaleString("en-ZA");
+  let body = "";
+  if (tab === "subs") {
+    const { data, error } = await sb.from("subscriptions").select("*, profiles(name)").order("created_at", { ascending: false });
+    if (error) throw error;
+    body = (data || []).map(s => `<div class="card" style="margin:8px 0"><div class="job"><div><b>${esc(s.profiles?.name || "User")}</b> — ${esc(s.plan)}<div class="meta">${date(s.created_at)} · <span class="badge ${s.status === "active" ? "" : "grey"}">${esc(s.status)}</span></div></div><div>${admBtn("Confirm payment", "admin_set_subscription", { p_sub: s.id, p_status: "active" })} ${admBtn("Reject", "admin_set_subscription", { p_sub: s.id, p_status: "rejected" }, "ghost")} ${s.status === "active" ? admBtn("Expire", "admin_set_subscription", { p_sub: s.id, p_status: "expired" }, "ghost") : ""}</div></div></div>`).join("") || `<div class="empty"><p>No subscription requests yet.</p></div>`;
+  } else if (tab === "workers") {
+    const { data, error } = await sb.from("profiles").select("*").eq("role", "worker").order("created_at", { ascending: false });
+    if (error) throw error;
+    body = (data || []).map(w => `<div class="card" style="margin:8px 0"><div class="job"><div><b>${esc(w.name)}</b> <span class="badge ${w.verified ? "" : "grey"}">${w.verified ? "Verified" : "Not verified"}</span> ${w.premium === "active" ? '<span class="badge gold">Premium</span>' : ""}<div class="meta">${esc(w.city || "")} · ${esc((w.skills || []).join(", "))}</div></div><div>${admBtn(w.verified ? "Remove verification" : "Verify (ID checked)", "admin_set_verified", { p_user: w.id, p_value: !w.verified }, w.verified ? "ghost" : "")} ${admBtn(w.premium === "active" ? "Remove Premium" : "Give Premium", "admin_set_premium", { p_user: w.id, p_value: w.premium === "active" ? "none" : "active" }, "ghost")}</div></div></div>`).join("") || `<div class="empty"><p>No workers yet.</p></div>`;
+  } else if (tab === "jobs") {
+    const list = await fetchJobs();
+    body = list.map(j => `<div class="card" style="margin:8px 0"><div class="job"><div><b><a href="#/job/${esc(j.id)}">${esc(j.title)}</a></b> ${j.featured ? '<span class="badge gold">Featured</span>' : ""}<div class="meta">${esc(j.category)} · ${esc(j.city)} · ${esc(j.status)}</div></div><div>${admBtn(j.featured ? "Unfeature" : "Feature", "admin_feature_job", { p_job: j.id, p_value: !j.featured }, "ghost")} ${admBtn("Delete", "admin_delete_job", { p_job: j.id }, "ghost")}</div></div></div>`).join("") || `<div class="empty"><p>No jobs yet.</p></div>`;
+  } else if (tab === "reports") {
+    const { data, error } = await sb.from("reports").select("*, jobs(id,title), profiles(name)").order("created_at", { ascending: false });
+    if (error) throw error;
+    body = (data || []).map(r => `<div class="card" style="margin:8px 0"><b>${r.jobs ? `<a href="#/job/${esc(r.jobs.id)}">${esc(r.jobs.title)}</a>` : "Deleted job"}</b><div class="meta">Reported by ${esc(r.profiles?.name || "unknown")} · ${date(r.created_at)}</div></div>`).join("") || `<div class="empty"><p>No reports.</p></div>`;
+  } else {
+    const { data, error } = await sb.from("contact_messages").select("*").order("created_at", { ascending: false });
+    if (error) throw error;
+    body = (data || []).map(m => `<div class="card" style="margin:8px 0"><b>${esc(m.name)}</b> · <a href="mailto:${esc(m.email)}">${esc(m.email)}</a><div class="meta">${date(m.created_at)}</div><p style="color:var(--ink);margin-top:6px">${esc(m.message)}</p></div>`).join("") || `<div class="empty"><p>No messages.</p></div>`;
+  }
+  return `<div class="wrap page"><h2>Admin</h2><div class="tabs">${tabs.map(([k, t]) => `<a href="#/admin?tab=${k}" style="text-decoration:none"><button class="${k === tab ? "on" : ""}" type="button">${t}</button></a>`).join("")}</div>${body}</div>`;
+}
 const googleBtn = () => `<div style="max-width:560px;margin:18px 0"><div class="meta" style="text-align:center;margin-bottom:8px">or</div><button type="button" class="btn ghost" style="width:100%" data-google>Continue with Google</button></div>`;
 const welcome = () => {
   const u = state.user;
@@ -279,6 +310,13 @@ const must = ({ error }) => { if (error) throw error; };
 const qs = d => new URLSearchParams(Object.entries(d).filter(([, v]) => v)).toString();
 
 function bind(r, parts, q) {
+  document.querySelectorAll("[data-adm]").forEach(b => b.onclick = async () => {
+    try {
+      const a = JSON.parse(b.dataset.adm);
+      if (a.fn === "admin_delete_job" && !confirm("Delete this job permanently?")) return;
+      must(await sb.rpc(a.fn, a.args)); toast("Saved"); render();
+    } catch (e) { toast(errMsg(e)); }
+  });
   document.querySelectorAll("[data-google]").forEach(b => b.onclick = async () => {
     const { error } = await sb.auth.signInWithOAuth({ provider: "google", options: { redirectTo: location.origin + location.pathname } });
     if (error) toast(errMsg(error));
