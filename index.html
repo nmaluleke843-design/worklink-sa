@@ -6,6 +6,9 @@
   <meta name="theme-color" content="#0A4F9E">
   <title>WorkLink SA</title>
   <meta name="description" content="WorkLink SA connects skilled workers with customers and businesses in South Africa. Find jobs, hire local talent, and build your future through a trusted, professional marketplace.">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon-192.png">
+  <link rel="apple-touch-icon" href="icon-192.png">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -26,5 +29,6 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
   <script src="config.js"></script>
   <script src="app.js"></script>
+  <script>if ("serviceWorker" in navigator) addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));</script>
 </body>
 </html>
