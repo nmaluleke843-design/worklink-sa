@@ -244,7 +244,7 @@ const terms = () => `<div class="wrap page" style="max-width:820px"><h2>Terms of
 <h3>1. About WorkLink SA</h3><p>WorkLink SA is an online platform that lets customers and workers in South Africa find each other. By creating an account or using the platform you agree to these Terms. If you do not agree, please do not use it.</p>
 <h3>2. Who may use it</h3><p>You must be 18 or older. You must give true information and keep your login details safe. You are responsible for everything done through your account.</p>
 <h3>3. Our role</h3><p>WorkLink SA is only a meeting place. We do not employ workers, are not a party to any agreement between users, do not supervise or guarantee any work, and do not guarantee that any job will be offered, filled or completed, or that any person is honest, qualified, licensed or insured.</p>
-<h3>4. Jobs, prices and payment</h3><p>Customers describe the work they need. Workers quote their own price in Rands. Users agree the price and the work between themselves. WorkLink SA does not handle or hold payments for jobs and takes no commission. A once-off joining fee (R25 for individuals and R50 for companies) is charged to activate an account for posting jobs and applying. The joining fee is paid to WorkLink SA, is not a payment for any job, and is not refundable except where the law requires. Any payment for a job is made directly between the customer and the worker, and any dispute over it is between them.</p>
+<h3>4. Jobs, prices and payment</h3><p>Customers describe the work they need. Workers quote their own price in Rands. Users agree the price and the work between themselves. WorkLink SA does not handle or hold payments for jobs and takes no commission. A once-off joining fee (R25 for individuals and R50 for companies) is charged to activate an account for posting jobs and applying. The joining fee is paid to WorkLink SA, is not a payment for any job, and is not refundable except where the law requires. Card and instant-EFT payments are processed by PayFast. Any payment for a job is made directly between the customer and the worker, and any dispute over it is between them.</p>
 <h3>5. Verification</h3><p>“Verified Worker” means a WorkLink SA administrator has checked a South African ID or passport and matched it to a selfie at the time of checking. It does not mean we have checked the worker’s skills, certificates, right to work in South Africa, criminal record, references, tools or insurance, and it is not a guarantee of quality, safety or honesty. Always do your own checks, such as asking for certificates for electrical and plumbing work.</p>
 <h3>6. Premium</h3><p>Premium plans and featured jobs are optional. A request is only recorded on the platform and becomes active once WorkLink SA confirms payment. Premium may improve how visible a profile or job is but does not guarantee work or results. Prices may change with notice.</p>
 <h3>7. What you must not do</h3><p>You must not post false, misleading, illegal, offensive or discriminatory content; pretend to be someone else; harass or threaten others; ask for payment outside an agreed job in a misleading way; post jobs or offer services that are illegal; collect other users’ information for other purposes; or try to break, overload or misuse the platform.</p>
@@ -260,7 +260,7 @@ const privacy = () => `<div class="wrap page" style="max-width:820px"><h2>Privac
 <h3>1. What we collect</h3><p><b>Account details:</b> your name, email address and, if you sign in with Google, the basic profile details Google shares with us. <b>Profile details:</b> your role (worker or customer), whether you are an individual or a company (and the company name), city, and for workers their skills and hourly rate. <b>Activity:</b> jobs you post, applications you send, reports, contact messages and Premium requests. <b>Verification:</b> if you ask to be verified, you upload a photo of your South African ID or passport and a selfie. They are stored privately and can only be viewed by WorkLink SA administrators to check that they match. We do not show them to other users.</p>
 <h3>2. Why we use it</h3><p>To create and run your account, show jobs and workers, let customers and workers connect, handle verification and Premium requests, respond to reports and messages, keep the platform safe, and meet legal duties. We do not sell your personal information.</p>
 <h3>3. What other people can see</h3><p>Worker profiles are visible to anyone using the platform and show your name, city, skills, rate, and whether you are verified or Premium. Jobs you post are visible to everyone. Applications are visible only to you and the customer who posted the job. Your email address and ID documents are not shown to other users.</p>
-<h3>4. Who handles your information</h3><p>We use Supabase to store data and run sign-in, and Google if you choose “Continue with Google”. These providers may store or process information on servers outside South Africa. We only use providers that apply reasonable security safeguards, and we share only what is needed to run the service. We may also disclose information when the law requires it.</p>
+<h3>4. Who handles your information</h3><p>We use Supabase to store data and run sign-in, Google if you choose “Continue with Google”, and PayFast to process joining-fee payments (your card or bank details go to PayFast and are never stored by us). These providers may store or process information on servers outside South Africa. We only use providers that apply reasonable security safeguards, and we share only what is needed to run the service. We may also disclose information when the law requires it.</p>
 <h3>5. How long we keep it</h3><p>We keep your information while your account is active and for as long afterwards as needed for safety, legal or dispute reasons. Verification documents, if collected, are kept only as long as needed to complete and record the check.</p>
 <h3>6. Security</h3><p>We take reasonable technical and organisational steps to protect your information, including access controls on the database. No online service is completely secure, so please use a strong, unique password and keep it private.</p>
 <h3>7. Your rights</h3><p>You may ask to see the personal information we hold about you, correct it, or have it deleted, and you may object to how we use it or withdraw your consent. To do so, use the <a href="#/contact">Contact page</a>. If you are unhappy with how we handle your information you may complain to the Information Regulator of South Africa (inforegulator.org.za).</p>
@@ -277,7 +277,7 @@ const feeBanner = () => `<div class="wrap" style="padding-top:16px"><div class="
 const needActivate = () => `<p><a class="btn" href="#/activate">Pay joining fee (${rand(feeOf(state.user))}) to continue</a></p>`;
 const needLogin = () => `<div class="wrap page"><div class="empty"><h3>Please log in first</h3><a class="btn" href="#/login">Log in</a> <a class="btn ghost" href="#/register">Sign up</a></div></div>`;
 
-async function activate() {
+async function activate(_, q) {
   const u = state.user;
   if (!u) return needLogin();
   if (u.fee_paid !== false) return `<div class="wrap page"><div class="empty"><h3>Your account is active ✔</h3><a class="btn" href="#/find-jobs">Find jobs</a> <a class="btn ghost" href="#/post-job">Post a job</a></div></div>`;
@@ -291,7 +291,9 @@ async function activate() {
     : last && last.status === "rejected" ? `<div class="note">Your last payment could not be confirmed. Please check the payment and notify us again.</div>` : "";
   return `<div class="wrap page" style="max-width:720px"><h2>Activate your account</h2>
   <p class="lead">A once-off joining fee of <b>${rand(feeOf(u))}</b> (${u.account_type === "company" ? "company" : "individual"} account) activates posting jobs and applying. Browsing stays free.</p>
-  ${status}<h3>How to pay</h3><p>Use this payment reference: <b>${esc(feeRef(u))}</b></p>${how}
+  ${q && q.paid ? '<div class="note">Thanks! We are confirming your payment with PayFast. This usually takes under a minute, so refresh this page shortly.</div>' : ""}${status}
+  <h3>Pay online (card or instant EFT)</h3><p><button class="btn alt" id="pf">Pay ${rand(feeOf(u))} with PayFast</button></p><p class="meta">Your account activates automatically once PayFast confirms the payment.</p>
+  <h3>Or pay by EFT</h3><p>Use this payment reference: <b>${esc(feeRef(u))}</b></p>${how}
   <p class="meta">WorkLink SA never marks a payment as received by itself. An administrator confirms it first.</p>
   <button class="btn" id="paid">I have paid — notify WorkLink SA</button></div>`;
 }
@@ -396,6 +398,18 @@ function bind(r, parts, q) {
     const t = () => { if (box) box.style.display = sel.value === "company" ? "" : "none"; };
     sel.onchange = t; t();
   });
+  const pf = document.getElementById("pf");
+  if (pf) pf.onclick = async () => {
+    pf.disabled = true;
+    try {
+      const { data, error } = await sb.functions.invoke("payfast-checkout");
+      if (error) throw error;
+      if (data && data.error) throw new Error(data.error);
+      const f = document.createElement("form"); f.method = "POST"; f.action = data.url;
+      Object.entries(data.fields).forEach(([k, v]) => { const i = document.createElement("input"); i.type = "hidden"; i.name = k; i.value = v; f.appendChild(i); });
+      document.body.appendChild(f); f.submit();
+    } catch (e) { toast(errMsg(e)); pf.disabled = false; }
+  };
   const paid = document.getElementById("paid");
   if (paid) paid.onclick = async () => {
     try { must(await sb.from("subscriptions").insert({ user_id: state.user.id, plan: "joining" })); toast("Thanks — we will activate your account once we confirm payment"); render(); }
@@ -494,4 +508,5 @@ function bind(r, parts, q) {
 }
 
 window.addEventListener("hashchange", render);
+if (new URLSearchParams(location.search).get("paid") === "1") { history.replaceState(null, "", location.pathname); location.hash = "#/activate?paid=1"; }
 loadUser().then(render);
