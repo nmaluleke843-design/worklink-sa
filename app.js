@@ -2,6 +2,8 @@
 const CFG = window.WL_CONFIG || {};
 const CATEGORIES = ["Construction","Carpentry","Welding","Plumbing","Electrical","Painting","Cleaning","Gardening","Moving","Car Wash","Delivery","Security","General Labour","Digital/Online Work","Other"];
 const CITIES = ["Midrand","Johannesburg","Soweto","Tembisa","Pretoria","Germiston","Sandton","Centurion","Randburg","Benoni"];
+const CITY_COORDS = { Midrand: [-25.9992, 28.1263], Johannesburg: [-26.2041, 28.0473], Soweto: [-26.2678, 27.8585], Tembisa: [-25.9969, 28.2268], Pretoria: [-25.7479, 28.2293], Germiston: [-26.2178, 28.1678], Sandton: [-26.1076, 28.0567], Centurion: [-25.8603, 28.1894], Randburg: [-26.094, 28.0064], Benoni: [-26.1885, 28.3208] };
+const OSM_TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 
 const configured = !!(CFG.supabaseUrl && CFG.supabaseKey && !CFG.supabaseKey.startsWith("PASTE") && window.supabase);
 const sb = configured ? window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey) : null;
@@ -185,6 +187,12 @@ async function browse([, cat, city]) {
   return `<div class="wrap page"><h2>${esc(cat)} in ${esc(city)}</h2>${jobsHtml(js)}<h3 style="margin-top:32px">Workers</h3>${workersHtml(ws)}</div>`;
 }
 
+function mapCard(j) {
+  const exact = j.lat != null && j.lng != null;
+  const [lat, lng] = exact ? [j.lat, j.lng] : (CITY_COORDS[j.city] || CITY_COORDS.Johannesburg);
+  return `<h3 style="margin-top:22px">Where the job is</h3><div id="jobmap" class="map" data-lat="${lat}" data-lng="${lng}" data-r="${exact ? 400 : 3000}"></div>
+  <p class="meta">${exact ? "Approximate area only." : "Shown for " + esc(j.city) + " (the customer did not drop a pin)."} The exact address is shared after you are selected. <a href="https://www.google.com/maps?q=${lat},${lng}" target="_blank" rel="noopener">Open in Google Maps</a></p>`;
+}
 async function job([, id]) {
   const { data: j } = await sb.from("jobs").select("*").eq("id", id).maybeSingle();
   if (!j) return `<div class="wrap page"><div class="empty"><h3>Job not found</h3><a href="#/find-jobs">Back to jobs</a></div></div>`;
@@ -207,7 +215,7 @@ async function job([, id]) {
     : `<h3>Apply for this job</h3><form class="f" id="apply"><label>Your price (R)<input name="price" type="number" min="1" required></label><label>Cover message<textarea name="message" required></textarea></label><button class="btn">Send application</button></form>`;
   return `<div class="wrap page"><a href="#/find-jobs">← All jobs</a><h2>${esc(j.title)}</h2>
   <p class="meta">${esc(j.category)} · ${esc(j.city)} · Budget ${rand(j.budget)} · <span class="badge">${esc(j.status)}</span></p>
-  <div class="card"><p style="color:var(--ink)">${esc(j.description)}</p></div>${body}
+  <div class="card"><p style="color:var(--ink)">${esc(j.description)}</p></div>${mapCard(j)}${body}
   ${u ? `<p style="margin-top:20px"><button class="btn ghost sm" id="report">Report this job</button></p>` : ""}</div>`;
 }
 
@@ -259,7 +267,7 @@ const privacy = () => `<div class="wrap page" style="max-width:820px"><h2>Privac
 <p>This policy explains how WorkLink SA collects and uses personal information, in line with the Protection of Personal Information Act (POPIA).</p>
 <h3>1. What we collect</h3><p><b>Account details:</b> your name, email address and, if you sign in with Google, the basic profile details Google shares with us. <b>Profile details:</b> your role (worker or customer), whether you are an individual or a company (and the company name), city, and for workers their skills and hourly rate. <b>Activity:</b> jobs you post, applications you send, reports, contact messages and Premium requests. <b>Verification:</b> if you ask to be verified, you upload a photo of your South African ID or passport and a selfie. They are stored privately and can only be viewed by WorkLink SA administrators to check that they match. We do not show them to other users.</p>
 <h3>2. Why we use it</h3><p>To create and run your account, show jobs and workers, let customers and workers connect, handle verification and Premium requests, respond to reports and messages, keep the platform safe, and meet legal duties. We do not sell your personal information.</p>
-<h3>3. What other people can see</h3><p>Worker profiles are visible to anyone using the platform and show your name, city, skills, rate, and whether you are verified or Premium. Jobs you post are visible to everyone. Applications are visible only to you and the customer who posted the job. Your email address and ID documents are not shown to other users.</p>
+<h3>3. What other people can see</h3><p>Worker profiles are visible to anyone using the platform and show your name, city, skills, rate, and whether you are verified or Premium. Jobs you post are visible to everyone, including the approximate map area you choose (a circle of about 400 m, not your exact address). Applications are visible only to you and the customer who posted the job. Your email address and ID documents are not shown to other users.</p>
 <h3>4. Who handles your information</h3><p>We use Supabase to store data and run sign-in, Google if you choose “Continue with Google”, and PayFast to process joining-fee payments (your card or bank details go to PayFast and are never stored by us). These providers may store or process information on servers outside South Africa. We only use providers that apply reasonable security safeguards, and we share only what is needed to run the service. We may also disclose information when the law requires it.</p>
 <h3>5. How long we keep it</h3><p>We keep your information while your account is active and for as long afterwards as needed for safety, legal or dispute reasons. Verification documents, if collected, are kept only as long as needed to complete and record the check.</p>
 <h3>6. Security</h3><p>We take reasonable technical and organisational steps to protect your information, including access controls on the database. No online service is completely secure, so please use a strong, unique password and keep it private.</p>
@@ -375,7 +383,7 @@ const postJob = () => {
   if (!u) return `<div class="wrap page"><div class="empty"><h3>Log in to post a job</h3><a class="btn" href="#/login">Log in</a> <a class="btn ghost" href="#/register?role=customer">Sign up</a></div></div>`;
   if (u.role !== "customer") return `<div class="wrap page"><div class="empty"><h3>Only customer accounts can post jobs</h3><p>Sign up with a customer account to hire people.</p></div></div>`;
   if (u.fee_paid === false) return `<div class="wrap page"><div class="empty"><h3>Activate your account to post jobs</h3><p>Pay the once-off joining fee of ${rand(feeOf(u))}.</p>${needActivate()}</div></div>`;
-  return `<div class="wrap page"><h2>Post a job</h2><form class="f" id="pj"><label>Title<input name="title" required></label><label>Category<select name="category">${opts(CATEGORIES)}</select></label><label>City<select name="city">${opts(CITIES, u.city)}</select></label><label>Budget (R)<input name="budget" type="number" min="1" required></label><label>Description<textarea name="description" required></textarea></label><button class="btn">Post job</button></form></div>`;
+  return `<div class="wrap page"><h2>Post a job</h2><form class="f" id="pj"><label>Title<input name="title" required></label><label>Category<select name="category">${opts(CATEGORIES)}</select></label><label>City<select name="city">${opts(CITIES, u.city)}</select></label><div><b style="font-size:.9rem">Where is the job?</b><div class="meta">Search for your suburb or click the map to drop a pin near the work. Workers only see an approximate area, so do not put your exact address in the description.</div><div class="mapsearch"><input id="mapq" type="search" placeholder="Suburb or area, e.g. Halfway House"><button type="button" class="btn sm" id="mapgo">Find</button></div><div id="pickmap" class="map"></div></div><input type="hidden" name="lat"><input type="hidden" name="lng"><label>Budget (R)<input name="budget" type="number" min="1" required></label><label>Description<textarea name="description" required></textarea></label><button class="btn">Post job</button></form></div>`;
 };
 
 /* ---------- behaviour ---------- */
@@ -393,6 +401,40 @@ const must = ({ error }) => { if (error) throw error; };
 const qs = d => new URLSearchParams(Object.entries(d).filter(([, v]) => v)).toString();
 
 function bind(r, parts, q) {
+  const jm = document.getElementById("jobmap");
+  if (jm && window.L) {
+    const lat = +jm.dataset.lat, lng = +jm.dataset.lng, rad = +jm.dataset.r;
+    const m = L.map(jm, { scrollWheelZoom: false }).setView([lat, lng], rad > 1000 ? 11 : 14);
+    L.tileLayer(OSM_TILES, { maxZoom: 19, attribution: "© OpenStreetMap contributors" }).addTo(m);
+    L.circle([lat, lng], { radius: rad, color: "#0A4F9E", fillOpacity: 0.2 }).addTo(m);
+  }
+  const pm = document.getElementById("pickmap");
+  if (pm && window.L) {
+    const frm = pm.closest("form"), citySel = frm.elements.city;
+    const start = () => CITY_COORDS[citySel.value] || CITY_COORDS.Johannesburg;
+    const m = L.map(pm).setView(start(), 12);
+    L.tileLayer(OSM_TILES, { maxZoom: 19, attribution: "© OpenStreetMap contributors" }).addTo(m);
+    let mk = null;
+    const put = (la, lo) => {
+      la = Math.round(la * 1000) / 1000; lo = Math.round(lo * 1000) / 1000;
+      frm.elements.lat.value = la; frm.elements.lng.value = lo;
+      if (mk) mk.setLatLng([la, lo]); else mk = L.circle([la, lo], { radius: 400, color: "#0A4F9E", fillOpacity: 0.25 }).addTo(m);
+    };
+    m.on("click", e => put(e.latlng.lat, e.latlng.lng));
+    citySel.onchange = () => { if (!mk) m.setView(start(), 12); };
+    const qi = document.getElementById("mapq");
+    const go = async () => {
+      const t = qi.value.trim(); if (!t) return;
+      try {
+        const res = await fetch("https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=za&q=" + encodeURIComponent(t + ", " + citySel.value));
+        const out = await res.json();
+        if (!out[0]) return toast("Place not found. Click on the map instead.");
+        m.setView([+out[0].lat, +out[0].lon], 14); put(+out[0].lat, +out[0].lon);
+      } catch (e) { toast("Search failed. Click on the map instead."); }
+    };
+    document.getElementById("mapgo").onclick = go;
+    qi.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); go(); } };
+  }
   document.querySelectorAll("select[name=account_type]").forEach(sel => {
     const box = sel.form.querySelector("[data-company]");
     const t = () => { if (box) box.style.display = sel.value === "company" ? "" : "none"; };
@@ -476,7 +518,7 @@ function bind(r, parts, q) {
   });
 
   on("pj", async (_, d) => {
-    must(await sb.from("jobs").insert({ owner_id: state.user.id, title: d.title, category: d.category, city: d.city, budget: Number(d.budget), description: d.description }));
+    must(await sb.from("jobs").insert({ owner_id: state.user.id, title: d.title, category: d.category, city: d.city, budget: Number(d.budget), description: d.description, lat: d.lat ? Number(d.lat) : null, lng: d.lng ? Number(d.lng) : null }));
     toast("Job posted"); location.hash = "#/find-jobs";
   });
 
