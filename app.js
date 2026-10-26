@@ -3,6 +3,12 @@ const CFG = window.WL_CONFIG || {};
 const CATEGORIES = ["Construction","Carpentry","Welding","Plumbing","Electrical","Painting","Cleaning","Gardening","Moving","Car Wash","Delivery","Security","General Labour","Digital/Online Work","Other"];
 const CITIES = ["Midrand","Johannesburg","Soweto","Tembisa","Pretoria","Germiston","Sandton","Centurion","Randburg","Benoni"];
 const CITY_COORDS = { Midrand: [-25.9992, 28.1263], Johannesburg: [-26.2041, 28.0473], Soweto: [-26.2678, 27.8585], Tembisa: [-25.9969, 28.2268], Pretoria: [-25.7479, 28.2293], Germiston: [-26.2178, 28.1678], Sandton: [-26.1076, 28.0567], Centurion: [-25.8603, 28.1894], Randburg: [-26.094, 28.0064], Benoni: [-26.1885, 28.3208] };
+async function fetchRatings(ids) {
+  if (!ids.length) return {};
+  const { data } = await sb.from("profile_ratings").select("*").in("user_id", ids);
+  return Object.fromEntries((data || []).map(x => [x.user_id, { avg: x.avg_rating, count: x.review_count }]));
+}
+const starTxt = r => r ? "★ " + r.avg + " (" + r.count + ")" : "";
 const OSM_TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 
 const configured = !!(CFG.supabaseUrl && CFG.supabaseKey && !CFG.supabaseKey.startsWith("PASTE") && window.supabase);
@@ -32,6 +38,7 @@ function parse() {
 }
 let renderToken = 0;
 async function render() {
+  clearInterval(window.__tt);
   const token = ++renderToken;
   const { parts, q } = parse();
   const r = parts[0] || "home";
@@ -86,7 +93,8 @@ async function fetchWorkers(f = {}) {
   if (f.q) { const t = f.q.replace(/[%,()]/g, " "); qb = qb.ilike("name", `%${t}%`); }
   const { data, error } = await qb;
   if (error) throw error;
-  return data || [];
+  const rt = await fetchRatings((data || []).map(w => w.id));
+  return (data || []).map(w => ({ ...w, _rt: rt[w.id] }));
 }
 
 /* ---------- shared pieces ---------- */
@@ -98,7 +106,7 @@ const jobsHtml = list => list.length
   ? `<div class="grid" style="grid-template-columns:1fr">${list.map(jobCard).join("")}</div>`
   : `<div class="empty"><h3>No jobs match yet</h3><p>Try another category or city, or post one yourself.</p><a class="btn" href="#/post-job">Post a Job</a></div>`;
 const workersHtml = list => list.length
-  ? `<div class="grid">${list.map(w => `<div class="card"><h3>${esc(w.name)} ${w.premium === "active" ? '<span class="badge gold">Premium</span>' : ""}</h3><p>${esc((w.skills || []).join(", ") || "No skills listed")}</p><div class="meta">${esc(w.city || "")} · ${w.rate ? rand(w.rate) + "/hr" : "Rate on request"} · <span class="badge grey">${w.verified ? "Verified" : "Not yet verified"}</span></div></div>`).join("")}</div>`
+  ? `<div class="grid">${list.map(w => `<div class="card"><h3>${esc(w.name)} ${w.premium === "active" ? '<span class="badge gold">Premium</span>' : ""}</h3><p>${esc((w.skills || []).join(", ") || "No skills listed")}</p><div class="meta">${w._rt ? starTxt(w._rt) + " · " : ""}${esc(w.city || "")} · ${w.rate ? rand(w.rate) + "/hr" : "Rate on request"} · <span class="badge grey">${w.verified ? "Verified" : "Not yet verified"}</span></div></div>`).join("")}</div>`
   : `<div class="empty"><h3>No workers listed yet</h3><p>Workers who sign up appear here.</p><a class="btn" href="#/register?role=worker">Join as a worker</a></div>`;
 
 /* ---------- pages ---------- */
@@ -197,16 +205,24 @@ async function job([, id]) {
   const { data: j } = await sb.from("jobs").select("*").eq("id", id).maybeSingle();
   if (!j) return `<div class="wrap page"><div class="empty"><h3>Job not found</h3><a href="#/find-jobs">Back to jobs</a></div></div>`;
   const u = state.user, mine = u && j.owner_id === u.id;
-  let apps = [], applied = false;
+  let apps = [], applied = false, selected = false, rt = {};
   if (mine) {
     const { data } = await sb.from("applications").select("*, profiles(name)").eq("job_id", id).order("created_at");
     apps = data || [];
+    rt = await fetchRatings(apps.map(a => a.worker_id));
   } else if (u && u.role === "worker") {
-    const { data } = await sb.from("applications").select("id").eq("job_id", id).eq("worker_id", u.id);
-    applied = !!(data && data.length);
+    const { data } = await sb.from("applications").select("id, picked").eq("job_id", id).eq("worker_id", u.id);
+    applied = !!(data && data.length); selected = !!(data && data[0] && data[0].picked);
   }
+  let addr = null;
+  if (mine || selected) { const { data: pv } = await sb.from("job_private").select("address").eq("job_id", id).maybeSingle(); addr = pv && pv.address; }
+  const { data: revs } = await sb.from("reviews").select("*, reviewer:profiles!reviewer_id(name)").eq("job_id", id).order("created_at");
+  const msgSection = (!mine && u && u.role === "worker" && applied) ? `<h3 style="margin-top:22px">Messages with the customer</h3><div id="th-${esc(u.id)}"></div>` : "";
+  const partner = mine ? (apps.find(a => a.picked) || {}).worker_id : j.owner_id;
+  const canReview = j.status === "Completed" && u && (mine || selected) && partner && !(revs || []).some(r => r.reviewer_id === u.id);
+  const reviewSection = (revs && revs.length || canReview) ? `<h3 style="margin-top:22px">Reviews</h3>${(revs || []).map(r => `<div class="card" style="margin:8px 0"><span style="color:var(--gold)">${"★".repeat(r.rating)}${"☆".repeat(5 - r.rating)}</span> <b>${esc(r.reviewer?.name || "User")}</b>${r.comment ? `<p>${esc(r.comment)}</p>` : ""}</div>`).join("")}${canReview ? `<form class="f" id="rv" data-reviewee="${esc(partner)}"><label>Your rating<select name="rating"><option value="5">★★★★★ Excellent</option><option value="4">★★★★ Good</option><option value="3">★★★ OK</option><option value="2">★★ Poor</option><option value="1">★ Very poor</option></select></label><label>Comment (optional)<textarea name="comment" maxlength="500"></textarea></label><button class="btn">Submit review</button></form>` : ""}` : "";
   const body = mine
-    ? `<h3>Applicants (${apps.length})</h3>${apps.map(a => `<div class="card" style="margin:8px 0"><b>${esc(a.profiles?.name || "Worker")}</b> — ${rand(a.price)}<p>${esc(a.message)}</p>${j.status === "Open" ? `<button class="btn sm" data-pick="${esc(a.id)}">Select</button>` : a.picked ? '<span class="badge">Selected</span>' : ""}</div>`).join("") || '<p class="meta">No applicants yet.</p>'}${j.status === "Assigned" ? `<button class="btn" id="done">Mark completed</button>` : ""}`
+    ? `<h3>Applicants (${apps.length})</h3>${apps.map(a => `<div class="card" style="margin:8px 0"><b>${esc(a.profiles?.name || "Worker")}</b> <span class="meta">${starTxt(rt[a.worker_id])}</span> — ${rand(a.price)}<p>${esc(a.message)}</p>${j.status === "Open" ? `<button class="btn sm" data-pick="${esc(a.id)}">Select</button>` : a.picked ? '<span class="badge">Selected</span>' : ""} <button class="btn sm ghost" data-thread="${esc(a.worker_id)}">Messages</button><div id="th-${esc(a.worker_id)}"></div></div>`).join("") || '<p class="meta">No applicants yet.</p>'}${j.status === "Assigned" ? `<button class="btn" id="done">Mark completed</button>` : ""}`
     : !u ? `<p><a class="btn" href="#/login">Log in as a worker to apply</a></p>`
     : u.role !== "worker" ? `<p class="meta">Only workers can apply for jobs.</p>`
     : u.fee_paid === false ? needActivate()
@@ -215,7 +231,7 @@ async function job([, id]) {
     : `<h3>Apply for this job</h3><form class="f" id="apply"><label>Your price (R)<input name="price" type="number" min="1" required></label><label>Cover message<textarea name="message" required></textarea></label><button class="btn">Send application</button></form>`;
   return `<div class="wrap page"><a href="#/find-jobs">← All jobs</a><h2>${esc(j.title)}</h2>
   <p class="meta">${esc(j.category)} · ${esc(j.city)} · Budget ${rand(j.budget)} · <span class="badge">${esc(j.status)}</span></p>
-  <div class="card"><p style="color:var(--ink)">${esc(j.description)}</p></div>${mapCard(j)}${body}
+  <div class="card"><p style="color:var(--ink)">${esc(j.description)}</p></div>${mapCard(j)}${addr ? `<div class="card" style="margin:12px 0"><b>Exact address (private)</b><p style="color:var(--ink)">${esc(addr)} · <a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(addr)}" target="_blank" rel="noopener">Open in Maps</a></p></div>` : ""}${body}${msgSection}${reviewSection}
   ${u ? `<p style="margin-top:20px"><button class="btn ghost sm" id="report">Report this job</button></p>` : ""}</div>`;
 }
 
@@ -257,7 +273,7 @@ const terms = () => `<div class="wrap page" style="max-width:820px"><h2>Terms of
 <h3>6. Premium</h3><p>Premium plans and featured jobs are optional. A request is only recorded on the platform and becomes active once WorkLink SA confirms payment. Premium may improve how visible a profile or job is but does not guarantee work or results. Prices may change with notice.</p>
 <h3>7. What you must not do</h3><p>You must not post false, misleading, illegal, offensive or discriminatory content; pretend to be someone else; harass or threaten others; ask for payment outside an agreed job in a misleading way; post jobs or offer services that are illegal; collect other users’ information for other purposes; or try to break, overload or misuse the platform.</p>
 <h3>8. Reports and removal</h3><p>You can report a job, user or message. We may review reports and may remove content, withhold verification or Premium, or suspend or close an account at our discretion, with or without notice, where we believe these Terms have been broken or other users may be at risk.</p>
-<h3>9. Your content</h3><p>You keep ownership of what you post, but you give WorkLink SA permission to display it on the platform so the service can work. You promise you have the right to post it.</p>
+<h3>9. Your content</h3><p>You keep ownership of what you post, but you give WorkLink SA permission to display it on the platform so the service can work. You promise you have the right to post it. Messages between users are stored and may be read by administrators to investigate a report or keep the platform safe. Reviews must be honest and based on a real job, and we may remove reviews or messages that break these Terms.</p>
 <h3>10. No responsibility for damage</h3><p>You use WorkLink SA and deal with other users entirely at your own risk. To the fullest extent allowed by South African law, WorkLink SA, its owner, operators and anyone working for it are not responsible or liable for any loss or damage of any kind, whether direct, indirect or consequential, including but not limited to: injury or death; damage to or theft of property; poor, incomplete or unsafe work; non-payment or payment disputes; the acts, omissions or statements of any user; false or inaccurate profiles, jobs or reviews; loss of income, work or data; or the platform being unavailable, interrupted or containing errors. Nothing in these Terms limits any right you have under law that cannot lawfully be limited or excluded.</p>
 <h3>11. Protection from claims</h3><p>To the extent the law allows, you agree to protect WorkLink SA and its owner from claims, losses and costs that arise from your content, your dealings with other users, or your breach of these Terms.</p>
 <h3>12. Changes and ending</h3><p>We may change these Terms or the platform at any time, and the updated Terms apply once posted here. Continuing to use the platform means you accept the changes. You may stop using WorkLink SA and ask us to close your account at any time.</p>
@@ -265,9 +281,9 @@ const terms = () => `<div class="wrap page" style="max-width:820px"><h2>Terms of
 <h3>14. Contact</h3><p>Questions? Use the <a href="#/contact">Contact page</a> or the WhatsApp chat button. Our handling of personal information is explained in the <a href="#/privacy">Privacy Policy</a>.</p></div>`;
 const privacy = () => `<div class="wrap page" style="max-width:820px"><h2>Privacy Policy</h2><p class="meta">Last updated: 22 October 2026</p>
 <p>This policy explains how WorkLink SA collects and uses personal information, in line with the Protection of Personal Information Act (POPIA).</p>
-<h3>1. What we collect</h3><p><b>Account details:</b> your name, email address and, if you sign in with Google, the basic profile details Google shares with us. <b>Profile details:</b> your role (worker or customer), whether you are an individual or a company (and the company name), city, and for workers their skills and hourly rate. <b>Activity:</b> jobs you post, applications you send, reports, contact messages and Premium requests. <b>Verification:</b> if you ask to be verified, you upload a photo of your South African ID or passport and a selfie. They are stored privately and can only be viewed by WorkLink SA administrators to check that they match. We do not show them to other users.</p>
+<h3>1. What we collect</h3><p><b>Account details:</b> your name, email address and, if you sign in with Google, the basic profile details Google shares with us. <b>Profile details:</b> your role (worker or customer), whether you are an individual or a company (and the company name), city, and for workers their skills and hourly rate. <b>Activity:</b> jobs you post, applications you send, messages between you and another user on a job, reviews, the private address you give for a job, reports, contact messages and Premium requests. Administrators can read messages only when needed to investigate a report or keep the platform safe. <b>Verification:</b> if you ask to be verified, you upload a photo of your South African ID or passport and a selfie. They are stored privately and can only be viewed by WorkLink SA administrators to check that they match. We do not show them to other users.</p>
 <h3>2. Why we use it</h3><p>To create and run your account, show jobs and workers, let customers and workers connect, handle verification and Premium requests, respond to reports and messages, keep the platform safe, and meet legal duties. We do not sell your personal information.</p>
-<h3>3. What other people can see</h3><p>Worker profiles are visible to anyone using the platform and show your name, city, skills, rate, and whether you are verified or Premium. Jobs you post are visible to everyone, including the approximate map area you choose (a circle of about 400 m, not your exact address). Applications are visible only to you and the customer who posted the job. Your email address and ID documents are not shown to other users.</p>
+<h3>3. What other people can see</h3><p>Worker profiles are visible to anyone using the platform and show your name, city, skills, rate, and whether you are verified or Premium. Jobs you post are visible to everyone, including the approximate map area you choose (a circle of about 400 m, not your exact address). Applications are visible only to you and the customer who posted the job. Messages are visible only to the two people in the conversation. The exact address you give for a job is shown only to you and the worker you select. Reviews are public. Your email address and ID documents are not shown to other users.</p>
 <h3>4. Who handles your information</h3><p>We use Supabase to store data and run sign-in, Google if you choose “Continue with Google”, and PayFast to process joining-fee payments (your card or bank details go to PayFast and are never stored by us). These providers may store or process information on servers outside South Africa. We only use providers that apply reasonable security safeguards, and we share only what is needed to run the service. We may also disclose information when the law requires it.</p>
 <h3>5. How long we keep it</h3><p>We keep your information while your account is active and for as long afterwards as needed for safety, legal or dispute reasons. Verification documents, if collected, are kept only as long as needed to complete and record the check.</p>
 <h3>6. Security</h3><p>We take reasonable technical and organisational steps to protect your information, including access controls on the database. No online service is completely secure, so please use a strong, unique password and keep it private.</p>
@@ -350,9 +366,9 @@ async function admin(_, q) {
     if (paths.length) { const { data: sg } = await sb.storage.from("verification").createSignedUrls(paths, 600); (sg || []).forEach(x => { if (x.signedUrl) urls[x.path] = x.signedUrl; }); }
     body = rows.map(v => `<div class="card" style="margin:8px 0"><b>${esc(v.profiles?.name || "User")}</b> <span class="badge grey">${esc(v.profiles?.account_type || "")}${v.profiles?.company_name ? " · " + esc(v.profiles.company_name) : ""}</span><div class="meta">Submitted ${date(v.submitted_at)} · ID photo, then selfie</div><div style="display:flex;gap:12px;flex-wrap:wrap;margin:10px 0">${[v.id_path, v.selfie_path].map(pth => urls[pth] ? `<a href="${esc(urls[pth])}" target="_blank" rel="noopener"><img src="${esc(urls[pth])}" alt="" style="max-width:240px;border-radius:10px;border:1px solid var(--line)"></a>` : '<span class="meta">Image unavailable</span>').join("")}</div>${admBtn("Approve — ID matches selfie", "admin_review_verification", { p_user: v.user_id, p_approve: true })} ${admBtn("Reject", "admin_review_verification", { p_user: v.user_id, p_approve: false }, "ghost")}</div>`).join("") || `<div class="empty"><p>No verifications waiting.</p></div>`;
   } else if (tab === "reports") {
-    const { data, error } = await sb.from("reports").select("*, jobs(id,title), profiles(name)").order("created_at", { ascending: false });
+    const { data, error } = await sb.from("reports").select("*, jobs(id,title), profiles(name), messages(body)").order("created_at", { ascending: false });
     if (error) throw error;
-    body = (data || []).map(r => `<div class="card" style="margin:8px 0"><b>${r.jobs ? `<a href="#/job/${esc(r.jobs.id)}">${esc(r.jobs.title)}</a>` : "Deleted job"}</b><div class="meta">Reported by ${esc(r.profiles?.name || "unknown")} · ${date(r.created_at)}</div></div>`).join("") || `<div class="empty"><p>No reports.</p></div>`;
+    body = (data || []).map(r => `<div class="card" style="margin:8px 0"><b>${r.jobs ? `<a href="#/job/${esc(r.jobs.id)}">${esc(r.jobs.title)}</a>` : "Deleted job"}</b><div class="meta">Reported by ${esc(r.profiles?.name || "unknown")} · ${date(r.created_at)}</div>${r.messages ? `<p style="color:var(--ink);margin-top:6px">“${esc(r.messages.body)}”</p>` : ""}</div>`).join("") || `<div class="empty"><p>No reports.</p></div>`;
   } else {
     const { data, error } = await sb.from("contact_messages").select("*").order("created_at", { ascending: false });
     if (error) throw error;
@@ -383,7 +399,7 @@ const postJob = () => {
   if (!u) return `<div class="wrap page"><div class="empty"><h3>Log in to post a job</h3><a class="btn" href="#/login">Log in</a> <a class="btn ghost" href="#/register?role=customer">Sign up</a></div></div>`;
   if (u.role !== "customer") return `<div class="wrap page"><div class="empty"><h3>Only customer accounts can post jobs</h3><p>Sign up with a customer account to hire people.</p></div></div>`;
   if (u.fee_paid === false) return `<div class="wrap page"><div class="empty"><h3>Activate your account to post jobs</h3><p>Pay the once-off joining fee of ${rand(feeOf(u))}.</p>${needActivate()}</div></div>`;
-  return `<div class="wrap page"><h2>Post a job</h2><form class="f" id="pj"><label>Title<input name="title" required></label><label>Category<select name="category">${opts(CATEGORIES)}</select></label><label>City<select name="city">${opts(CITIES, u.city)}</select></label><div><b style="font-size:.9rem">Where is the job?</b><div class="meta">Search for your suburb or click the map to drop a pin near the work. Workers only see an approximate area, so do not put your exact address in the description.</div><div class="mapsearch"><input id="mapq" type="search" placeholder="Suburb or area, e.g. Halfway House"><button type="button" class="btn sm" id="mapgo">Find</button></div><div id="pickmap" class="map"></div></div><input type="hidden" name="lat"><input type="hidden" name="lng"><label>Budget (R)<input name="budget" type="number" min="1" required></label><label>Description<textarea name="description" required></textarea></label><button class="btn">Post job</button></form></div>`;
+  return `<div class="wrap page"><h2>Post a job</h2><form class="f" id="pj"><label>Title<input name="title" required></label><label>Category<select name="category">${opts(CATEGORIES)}</select></label><label>City<select name="city">${opts(CITIES, u.city)}</select></label><div><b style="font-size:.9rem">Where is the job?</b><div class="meta">Search for your suburb or click the map to drop a pin near the work. Workers only see an approximate area, so do not put your exact address in the description.</div><div class="mapsearch"><input id="mapq" type="search" placeholder="Suburb or area, e.g. Halfway House"><button type="button" class="btn sm" id="mapgo">Find</button></div><div id="pickmap" class="map"></div></div><label>Exact address (private: shown only to the worker you select)<input name="address" maxlength="300" placeholder="Street, number, suburb"></label><input type="hidden" name="lat"><input type="hidden" name="lng"><label>Budget (R)<input name="budget" type="number" min="1" required></label><label>Description<textarea name="description" required></textarea></label><button class="btn">Post job</button></form></div>`;
 };
 
 /* ---------- behaviour ---------- */
@@ -399,6 +415,34 @@ const on = (id, fn) => {
 };
 const must = ({ error }) => { if (error) throw error; };
 const qs = d => new URLSearchParams(Object.entries(d).filter(([, v]) => v)).toString();
+
+async function renderThread(box, jobId, workerId) {
+  if (!box) return;
+  const { data, error } = await sb.from("messages").select("*").eq("job_id", jobId).eq("worker_id", workerId).order("created_at");
+  if (error) { box.innerHTML = `<p class="meta">${esc(errMsg(error))}</p>`; return; }
+  const meId = state.user.id;
+  box.innerHTML = `<div class="thread">${(data || []).map(m => `<div class="msg ${m.sender_id === meId ? "me" : "them"}"><div>${esc(m.body)}</div><div class="meta">${new Date(m.created_at).toLocaleString("en-ZA")} · <button type="button" class="link" data-rep="${esc(m.id)}">Report</button></div></div>`).join("") || '<p class="meta">No messages yet. Say hello!</p>'}</div>
+  <form class="tform"><input name="body" maxlength="1000" placeholder="Write a message…" required><button class="btn sm">Send</button></form>
+  <p class="meta">Never pay or share bank details outside the agreed job. Report anything suspicious.</p>`;
+  const th = box.querySelector(".thread"); th.scrollTop = th.scrollHeight;
+  box.querySelector("form").onsubmit = async e => {
+    e.preventDefault();
+    const f = e.target, text = f.body.value.trim(); if (!text) return;
+    try { must(await sb.from("messages").insert({ job_id: jobId, worker_id: workerId, sender_id: meId, body: text })); f.reset(); await renderThread(box, jobId, workerId); }
+    catch (err) { toast(errMsg(err)); }
+  };
+  box.querySelectorAll("[data-rep]").forEach(b => b.onclick = async () => {
+    try { must(await sb.from("reports").insert({ job_id: jobId, reporter_id: meId, message_id: b.dataset.rep })); toast("Message reported to administrators"); }
+    catch (err) { toast(errMsg(err)); }
+  });
+  clearInterval(window.__tt);
+  window.__tt = setInterval(() => {
+    if (!document.body.contains(box)) return clearInterval(window.__tt);
+    const inp = box.querySelector("input[name=body]");
+    if (inp && (inp.value || document.activeElement === inp)) return;
+    renderThread(box, jobId, workerId);
+  }, 10000);
+}
 
 function bind(r, parts, q) {
   const jm = document.getElementById("jobmap");
@@ -518,12 +562,20 @@ function bind(r, parts, q) {
   });
 
   on("pj", async (_, d) => {
-    must(await sb.from("jobs").insert({ owner_id: state.user.id, title: d.title, category: d.category, city: d.city, budget: Number(d.budget), description: d.description, lat: d.lat ? Number(d.lat) : null, lng: d.lng ? Number(d.lng) : null }));
+    const ins = await sb.from("jobs").insert({ owner_id: state.user.id, title: d.title, category: d.category, city: d.city, budget: Number(d.budget), description: d.description, lat: d.lat ? Number(d.lat) : null, lng: d.lng ? Number(d.lng) : null }).select("id").single();
+    must(ins);
+    if ((d.address || "").trim()) must(await sb.from("job_private").insert({ job_id: ins.data.id, address: d.address.trim() }));
     toast("Job posted"); location.hash = "#/find-jobs";
   });
 
   if (r === "job") {
     const id = parts[1], u = state.user;
+    document.querySelectorAll("[data-thread]").forEach(b => b.onclick = () => renderThread(document.getElementById("th-" + b.dataset.thread), id, b.dataset.thread));
+    if (u && u.role === "worker") renderThread(document.getElementById("th-" + u.id), id, u.id);
+    on("rv", async (f, d) => {
+      must(await sb.from("reviews").insert({ job_id: id, reviewer_id: u.id, reviewee_id: f.dataset.reviewee, rating: Number(d.rating), comment: (d.comment || "").trim() || null }));
+      toast("Thanks for your review"); render();
+    });
     on("apply", async (_, d) => {
       must(await sb.from("applications").insert({ job_id: id, worker_id: u.id, price: Number(d.price), message: d.message }));
       toast("Application sent"); render();
